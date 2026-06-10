@@ -12,6 +12,7 @@ const (
 	hashTableLen = 1 << hashLog
 	mfLimit      = 12 // matches may not start in the last 12 bytes
 	lastLiterals = 5  // the last 5 bytes are always literals
+	skipTrigger  = 6  // search step grows after this many misses
 )
 
 func hash4(x uint32) uint32 { return (x * 2654435761) >> (32 - hashLog) }
@@ -39,14 +40,28 @@ func compress(src []byte, mlen func(a, b []byte) int) []byte {
 	anchor := 0
 	table[hash4(u32(src))] = 0
 	ip := 1
-	for ip < limit {
-		seq := u32(src[ip:])
-		h := hash4(seq)
-		ref := int(table[h])
-		table[h] = int32(ip)
-		if ref < 0 || ip-ref > 65535 || u32(src[ref:]) != seq {
-			ip++
-			continue
+	for {
+		// Search for the next 4-byte match. On misses the step grows
+		// (searchMatchNb >> skipTrigger), so incompressible runs are skipped
+		// quickly instead of scanned byte-by-byte.
+		var ref int
+		fwdIp := ip
+		step, searchNb := 1, 1<<skipTrigger
+		for {
+			ip = fwdIp
+			fwdIp += step
+			if fwdIp > limit {
+				return emitLast(dst, src[anchor:])
+			}
+			seq := u32(src[ip:])
+			h := hash4(seq)
+			ref = int(table[h])
+			table[h] = int32(ip)
+			step = searchNb >> skipTrigger
+			searchNb++
+			if ref >= 0 && ip-ref <= 65535 && u32(src[ref:]) == seq {
+				break
+			}
 		}
 		fwd := mlen(src[ip+minMatch:matchLimit], src[ref+minMatch:])
 		ml := minMatch + fwd
@@ -60,11 +75,11 @@ func compress(src []byte, mlen func(a, b []byte) int) []byte {
 		ip = mStart + ml
 		anchor = ip
 		if ip >= limit {
-			break
+			return emitLast(dst, src[anchor:])
 		}
+		// Seed the table with two interior positions for better next matches.
 		table[hash4(u32(src[ip-2:]))] = int32(ip - 2)
 	}
-	return emitLast(dst, src[anchor:])
 }
 
 func emitLength(dst []byte, n int) []byte {
