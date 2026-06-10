@@ -8,7 +8,7 @@ import "github.com/go-compressions/matchlen"
 
 const (
 	minMatch     = 4
-	hashLog      = 16
+	hashLog      = 17
 	hashTableLen = 1 << hashLog
 	mfLimit      = 12 // matches may not start in the last 12 bytes
 	lastLiterals = 5  // the last 5 bytes are always literals
@@ -31,14 +31,12 @@ func compress(src []byte, mlen func(a, b []byte) int) []byte {
 	if len(src) < mfLimit+minMatch {
 		return emitLast(dst, src)
 	}
+	// Zero-init (Go memclr): a slot of 0 means "empty or position 0"; the u32
+	// equality check below disambiguates, so no -1 fill is needed.
 	var table [hashTableLen]int32
-	for i := range table {
-		table[i] = -1
-	}
 	matchLimit := len(src) - lastLiterals
 	limit := len(src) - mfLimit
 	anchor := 0
-	table[hash4(u32(src))] = 0
 	ip := 1
 	for {
 		// Search for the next 4-byte match. On misses the step grows
@@ -59,7 +57,7 @@ func compress(src []byte, mlen func(a, b []byte) int) []byte {
 			table[h] = int32(ip)
 			step = searchNb >> skipTrigger
 			searchNb++
-			if ref >= 0 && ip-ref <= 65535 && u32(src[ref:]) == seq {
+			if ip-ref <= 65535 && u32(src[ref:]) == seq {
 				break
 			}
 		}

@@ -23,16 +23,15 @@ Encoding a 1 MiB redundant corpus (Apple Silicon, arm64):
 
 | encoder | throughput | vs scalar |
 |---|---|---|
-| this package, **matchlen SIMD** | **~4.5 GB/s** | **~2.0x** |
-| this package, scalar match-count | ~2.25 GB/s | 1.0x |
-| `pierrec/lz4` (reference, tuned) | ~5.3 GB/s | — |
+| this package, **matchlen SIMD** | **~5.6 GB/s** | **~2.3x** |
+| this package, scalar match-count | ~2.4 GB/s | 1.0x |
+| `pierrec/lz4` (reference) | ~5.2 GB/s | — |
 
-So the SIMD common-prefix primitive **doubles encode throughput** here (with an
-LZ4-style search-step acceleration over incompressible runs).
-Compression ratio is identical to `pierrec/lz4` (≈0.065 on this corpus; ours is
-marginally smaller), and blocks are mutually decodable. `pierrec/lz4` is faster
-overall thanks to more match-finder tuning — this package is a compact reference
-that isolates matchlen's contribution.
+The SIMD common-prefix primitive gives **~2.3x** over a scalar match-count, and
+with an LZ4-style search-step acceleration and a zero-init hash table the package
+is **on par with — slightly ahead of — `pierrec/lz4`** here, at an essentially
+identical compression ratio (≈0.065), blocks mutually decodable. (Measured
+interleaved to cancel machine drift; results are corpus-dependent.)
 
 ## License
 
