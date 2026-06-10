@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/go-compressions/matchlen"
+	"github.com/go-simd/matchlen"
 	plz4 "github.com/pierrec/lz4/v4"
 )
 

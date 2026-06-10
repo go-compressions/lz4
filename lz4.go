@@ -1,10 +1,10 @@
 // Package lz4 implements the LZ4 block format (compress and decompress). The
 // compressor's match extension — LZ4's hot "count the matching bytes" inner
-// loop — is delegated to github.com/go-compressions/matchlen, whose SIMD
+// loop — is delegated to github.com/go-simd/matchlen, whose SIMD
 // common-prefix kernel makes it fast on amd64/arm64/riscv64.
 package lz4
 
-import "github.com/go-compressions/matchlen"
+import "github.com/go-simd/matchlen"
 
 const (
 	minMatch     = 4
