@@ -6,6 +6,13 @@ A clean Go implementation of the **LZ4 block format** (`CompressBlock` /
 inner loop (`LZ4_count`) to [matchlen](https://github.com/go-compressions/matchlen),
 whose SIMD common-prefix kernel makes match extension fast.
 
+As of `matchlen` **v0.3.0**, that kernel ships SIMD on **all six** of Go's 64-bit
+targets — amd64 (SSE2), arm64 (NEON), riscv64 (RVV), loong64 (LSX), ppc64le (VSX)
+and s390x (vector facility). lz4 needs **no code change** to benefit: `MatchLen`
+dispatches per-arch, so the bulk match now runs vectorized on ppc64le and s390x
+too. Those two paths are qemu-validated (correct + bit-identical to scalar);
+native ppc64le/s390x throughput numbers are pending hardware.
+
 ```go
 c := lz4.CompressBlock(src)
 out, _ := lz4.DecompressBlock(c, len(src))
