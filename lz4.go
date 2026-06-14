@@ -1,68 +1,132 @@
 // Package lz4 implements the LZ4 block format (compress and decompress). The
 // compressor's match extension — LZ4's hot "count the matching bytes" inner
 // loop — is delegated to github.com/go-simd/matchlen, whose SIMD
-// common-prefix kernel makes it fast on amd64/arm64/riscv64.
+// common-prefix kernel makes it fast on all six 64-bit Go targets.
+//
+// The match-finder is a single-cell hash table keyed on a 6-byte sequence (the
+// reference LZ4 / pierrec hash), probing several adjacent positions per step
+// and using lazy matching — if position+1 yields a strictly longer match the
+// shorter one is deferred — for a better ratio on text.
 package lz4
 
-import "github.com/go-simd/matchlen"
+import (
+	"encoding/binary"
+
+	"github.com/go-simd/matchlen"
+)
 
 const (
 	minMatch     = 4
-	hashLog      = 17
+	hashLog      = 16 // 64 KiB table — the reference LZ4 fast-mode size
 	hashTableLen = 1 << hashLog
-	mfLimit      = 12 // matches may not start in the last 12 bytes
-	lastLiterals = 5  // the last 5 bytes are always literals
-	skipTrigger  = 6  // search step grows after this many misses
+	winSize      = 1 << 16 // LZ4 offsets are 16-bit, so the window is 64 KiB
+	mfLimit      = 12      // matches may not start in the last 12 bytes
+	lastLiterals = 5       // the last 5 bytes are always literals
+	adaptSkipLog = 7       // skip ramp on incompressible spans (matches pierrec)
+
+	lazyEnabled = true // lazy matching: defer a match if pos+1 is longer
+	// lazyMaxLen bounds the lazy lookahead to short matches. A long match is
+	// already a big win, so peeking ahead rarely improves it and the extra
+	// hash+confirm+count is wasted; skipping the peek there recovers speed at a
+	// negligible ratio cost.
+	lazyMaxLen = 64
 )
 
-func hash4(x uint32) uint32 { return (x * 2654435761) >> (32 - hashLog) }
-
-func u32(b []byte) uint32 {
-	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+// hash6 hashes the lower 6 bytes of x, exactly as pierrec/reference LZ4 do for
+// fast-mode compression. A 6-byte key disperses far better than a 4-byte one,
+// which both finds more candidates and cuts false-positive confirmations. Note
+// it reads only the low 48 bits, so the key for position p+k is hash6(seq>>8*k)
+// where seq is the 8-byte load at p — no extra memory load is needed.
+func hash6(x uint64) uint32 {
+	const prime6bytes = 227718039650203
+	return uint32(((x << (64 - 48)) * prime6bytes) >> (64 - hashLog))
 }
+
+func u32(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }
+func u64(b []byte) uint64 { return binary.LittleEndian.Uint64(b) }
 
 // CompressBlock compresses src into a standard LZ4 block.
 func CompressBlock(src []byte) []byte { return compress(src, matchlen.MatchLen) }
 
 // compress is parameterised by the match-counter so benchmarks can compare the
 // SIMD matchlen against a scalar reference.
+//
+// The parse keeps one position per 6-byte hash. Each step probes the table at
+// ip, ip+1 and ip+2 (cheap: a single 8-byte load covers all three), taking the
+// first confirmed hit. On a hit it then applies lazy matching: it looks one
+// byte ahead and, if that yields a strictly longer match, it defers the current
+// one (emitting one extra literal) and takes the longer match instead. That is
+// the classic LZ4 ratio lever for text.
 func compress(src []byte, mlen func(a, b []byte) int) []byte {
 	dst := make([]byte, 0, len(src)/2+16)
 	if len(src) < mfLimit+minMatch {
 		return emitLast(dst, src)
 	}
-	// Zero-init (Go memclr): a slot of 0 means "empty or position 0"; the u32
-	// equality check below disambiguates, so no -1 fill is needed.
+	// Zero-init (Go memclr): a slot of 0 means "empty or position 0"; the win
+	// + u32 checks below disambiguate, so no -1 fill is needed.
 	var table [hashTableLen]int32
 	matchLimit := len(src) - lastLiterals
 	limit := len(src) - mfLimit
 	anchor := 0
-	ip := 1
+	ip := 0
+
 	for {
-		// Search for the next 4-byte match. On misses the step grows
-		// (searchMatchNb >> skipTrigger), so incompressible runs are skipped
-		// quickly instead of scanned byte-by-byte.
+		// Search forward for the next match, probing three adjacent positions
+		// per outer step from a single 8-byte load (the keys for ip, ip+1, ip+2
+		// are hash6(seq), hash6(seq>>8), hash6(seq>>16)), ramping the skip
+		// distance on incompressible spans. Every probed position is inserted so
+		// later matches see more candidates.
 		var ref int
-		fwdIp := ip
-		step, searchNb := 1, 1<<skipTrigger
+		seq := u64(src[ip:])
 		for {
-			ip = fwdIp
-			fwdIp += step
-			if fwdIp > limit {
-				return emitLast(dst, src[anchor:])
-			}
-			seq := u32(src[ip:])
-			h := hash4(seq)
-			ref = int(table[h])
-			table[h] = int32(ip)
-			step = searchNb >> skipTrigger
-			searchNb++
-			if ip-ref <= 65535 && u32(src[ref:]) == seq {
+			h0 := hash6(seq)
+			r0 := int(table[h0])
+			table[h0] = int32(ip)
+			if ip-r0 <= winSize && r0 < ip && u32(src[r0:]) == uint32(seq) {
+				ref = r0
 				break
 			}
+			h1 := hash6(seq >> 8)
+			r1 := int(table[h1])
+			table[h1] = int32(ip + 1)
+			if ip+1-r1 <= winSize && r1 < ip+1 && u32(src[r1:]) == uint32(seq>>8) {
+				ip, ref = ip+1, r1
+				break
+			}
+			h2 := hash6(seq >> 16)
+			r2 := int(table[h2])
+			table[h2] = int32(ip + 2)
+			if ip+2-r2 <= winSize && r2 < ip+2 && u32(src[r2:]) == uint32(seq>>16) {
+				ip, ref = ip+2, r2
+				break
+			}
+			ip += 3 + (ip-anchor)>>adaptSkipLog
+			if ip > limit {
+				return emitLast(dst, src[anchor:])
+			}
+			seq = u64(src[ip:])
 		}
-		fwd := mlen(src[ip+minMatch:matchLimit], src[ref+minMatch:])
-		ml := minMatch + fwd
+
+		// Lazy matching: measure the match at ip, then peek one byte ahead. If
+		// ip+1 yields a strictly longer match, defer the current one (emit one
+		// extra literal) and take the longer match instead. A single lookahead
+		// step captures most of the ratio win at a fraction of the cost of a
+		// chained lazy search.
+		ml := minMatch + mlen(src[ip+minMatch:matchLimit], src[ref+minMatch:])
+		if lazyEnabled && ml < lazyMaxLen && ip+1 <= limit {
+			lseq := u64(src[ip+1:])
+			h := hash6(lseq)
+			nref := int(table[h])
+			table[h] = int32(ip + 1)
+			if ip+1-nref <= winSize && nref < ip+1 && u32(src[nref:]) == uint32(lseq) {
+				if nml := minMatch + mlen(src[ip+1+minMatch:matchLimit], src[nref+minMatch:]); nml > ml {
+					ip++
+					ref, ml = nref, nml
+				}
+			}
+		}
+
+		// Extend the match backwards over the pending literals.
 		mStart, mref := ip, ref
 		for mStart > anchor && mref > 0 && src[mStart-1] == src[mref-1] {
 			mStart--
@@ -72,11 +136,11 @@ func compress(src []byte, mlen func(a, b []byte) int) []byte {
 		dst = emitSequence(dst, src[anchor:mStart], mStart-mref, ml)
 		ip = mStart + ml
 		anchor = ip
-		if ip >= limit {
+		if ip > limit {
 			return emitLast(dst, src[anchor:])
 		}
-		// Seed the table with two interior positions for better next matches.
-		table[hash4(u32(src[ip-2:]))] = int32(ip - 2)
+		// Seed the table with an interior position for better next matches.
+		table[hash6(u64(src[ip-2:]))] = int32(ip - 2)
 	}
 }
 

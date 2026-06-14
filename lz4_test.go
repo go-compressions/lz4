@@ -82,6 +82,34 @@ func TestCrossCompatPierrec(t *testing.T) {
 	}
 }
 
+// TestDecompressCorrupt exercises every error path in DecompressBlock with
+// minimal hand-built malformed blocks.
+func TestDecompressCorrupt(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+	}{
+		// token says literal length is 15+ but the varint is truncated.
+		{"trunc literal-length varint", []byte{0xF0}},
+		// literal length runs past the end of the block.
+		{"literals past end", []byte{0x30, 0x41}},
+		// literals consumed, but the 2-byte offset is missing.
+		{"missing offset", []byte{0x10, 'a', 0x01}},
+		// match-length nibble is 15 but the match-length varint is truncated.
+		{"trunc match-length varint", []byte{0x0F, 0x01, 0x00}},
+		// offset of zero is invalid (no back-reference possible).
+		{"zero offset", []byte{0x10, 'a', 0x00, 0x00}},
+	}
+	for _, tc := range cases {
+		if _, err := DecompressBlock(tc.in, 16); err != errCorrupt {
+			t.Errorf("%s: got err=%v, want errCorrupt", tc.name, err)
+		}
+	}
+	if errCorrupt.Error() != "lz4: corrupt block" {
+		t.Errorf("Error() = %q", errCorrupt.Error())
+	}
+}
+
 func benchCorpus() []byte {
 	mix := make([]byte, 0, 1<<20)
 	base := []byte("The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. ")

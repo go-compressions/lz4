@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-compressions/brand/main/social/go-compressions-lz4.png" alt="go-compressions/lz4" width="720"></p>
+
 # lz4
 
 A clean Go implementation of the **LZ4 block format** (`CompressBlock` /
@@ -24,43 +26,51 @@ LZ4 has **no entropy-coding stage** — encode time is dominated by match-findin
 and extension — so a faster `MatchLen` shows up end-to-end (unlike codecs whose
 time goes to FSE/Huffman).
 
+## The compressor
+
+The parse is a single-cell hash table keyed on a **6-byte sequence** (the
+reference LZ4 / `pierrec` fast-mode hash, far better dispersed than a 4-byte
+key). Each step probes three adjacent positions (`ip`, `ip+1`, `ip+2`) from one
+8-byte load, inserting every position so later matches see more candidates, and
+ramps its skip distance on incompressible spans. On a hit it applies **lazy
+matching** — it peeks one byte ahead and, if `ip+1` yields a strictly longer
+match, defers the current one — capped to short matches so the lookahead cost is
+only paid where it can help. Match-length extension is delegated to
+[matchlen](https://github.com/go-compressions/matchlen)'s SIMD kernel.
+
 ## Performance
 
-Encoding a 1 MiB redundant corpus, `-count=6`/`-count=8` medians,
-**re-benched as of 2026-06-14** (matchlen kernels unchanged — this is a
-freshness/confirmation pass).
+Encoded as single LZ4 blocks, three representative corpora — two text
+(Project Gutenberg `pg1661`, Mark Twain) and one binary (a kernel `bzImage`) —
+`-count=8` medians, **as of 2026-06-14**.
 
 **Native arm64 (Apple Silicon, this host):**
 
-| encoder | throughput | vs our scalar | vs `pierrec` |
-|---|---:|---:|---:|
-| this package, **matchlen SIMD** | ~4.5 GB/s | **~2.1×** | ~0.86× |
-| this package, scalar match-count | ~2.1 GB/s | 1.0× | — |
-| `pierrec/lz4` (reference) | ~5.3 GB/s | — | 1.0× |
+| corpus | this package | `pierrec/lz4` | speed vs `pierrec` | our size | `pierrec` size | our size vs `pierrec` |
+|---|---:|---:|---:|---:|---:|---:|
+| text `pg1661` | 208 MB/s | 301 MB/s | 0.69× | **0.528** | 0.553 | **−4.6%** |
+| text Twain | 205 MB/s | 285 MB/s | 0.72× | **0.548** | 0.575 | **−4.6%** |
+| binary `bzImage` | 249 MB/s | 370 MB/s | 0.67× | **0.638** | 0.653 | **−2.2%** |
 
-**amd64 (QEMU x86_64 lima VM — TCG, so absolutes are low; the *ratios* are the signal):**
+**amd64 (QEMU x86_64 lima VM — TCG, so absolutes are low and noisy; the
+compressed output is *byte-identical* to arm64 and decodes both ways with
+`pierrec`):** our encoder lands at ≈0.5–0.7× `pierrec`'s TCG throughput, with the
+same size advantage as above (the parse is deterministic, so sizes match arm64
+exactly).
 
-| encoder | throughput | vs our scalar | vs `pierrec` |
-|---|---:|---:|---:|
-| this package, **matchlen SIMD** | ~0.22 GB/s | **~1.9×** | ~0.67× |
-| this package, scalar match-count | ~0.12 GB/s | 1.0× | — |
-| `pierrec/lz4` (reference) | ~0.33 GB/s | — | 1.0× |
-
-**Honest finding (verdict updated).** The SIMD common-prefix primitive is the
-real, confirmed contribution: it gives **~1.9–2.1× over our scalar match-count**
-on both arches, and lz4 inherits it for free via `matchlen.MatchLen`. However the
-earlier "slightly ahead of `pierrec/lz4`" claim **did not reproduce** in this
-pass — on both native arm64 (~0.86×) and the amd64 TCG VM (~0.67×) **`pierrec` is
-ahead end-to-end**. That is expected and honest: `pierrec/lz4` is a mature,
-heavily-tuned whole-block encoder, whereas this package pairs the fast `MatchLen`
-primitive with a deliberately simple greedy compressor — so a faster *match
-count* does not by itself overtake a better *parse/search* strategy. Compression
-ratio stays essentially identical (≈0.065) and blocks remain mutually decodable.
-The takeaway: **matchlen SIMD is a clear win over scalar match-counting; the
-end-to-end gap to `pierrec` is closed by encoder tuning, not by the kernel.**
+**Honest verdict.** This pass **beat `pierrec` on compression ratio** on every
+corpus (text ≈4.6% smaller, binary ≈2.2% smaller) — the 6-byte hash, 3-position
+probe and lazy matching are real wins, and they fixed the prior parse, which was
+actually **7–8% *worse* than `pierrec` on text**. We did **not** beat `pierrec`
+on **speed**: it stays ahead at ≈1.4× (we are at ~0.67–0.72× native arm64). That
+gap is the parse/table, not the kernel — `pierrec` uses a half-the-size 16-bit
+position table (better cache footprint) and skips lazy matching in fast mode,
+trading a little ratio for speed; we make the opposite trade. The SIMD
+`matchlen` extension is correct and in use, but match extension is only ~10% of
+encode time here — the bottleneck is match-*finding*. Blocks remain mutually
+decodable with `pierrec` in both directions, verified on arm64 and amd64.
 (`matchlen` ships SIMD on all six 64-bit Go targets; native ppc64le/s390x
-throughput is pending hardware — see the `matchlen` repo for its per-arch
-llvm-mca cycle estimates.)
+throughput is pending hardware.)
 
 ## License
 
