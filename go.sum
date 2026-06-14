@@ -1,5 +1,5 @@
-github.com/go-simd/matchlen v0.2.1 h1:VrzVLTJMBHX1+RvVP2is/WP0QJ4iUeZFMCmdxw80PRY=
-github.com/go-simd/matchlen v0.2.1/go.mod h1:h95M7Ih4MZqO1+Dir0S+joy170I4NrPYaqQFInebWzo=
+github.com/go-simd/matchlen v0.3.0 h1:cOLOrcDJjQHzkbQAP2XYZzUaC+qo6heua8xJA1HyDRU=
+github.com/go-simd/matchlen v0.3.0/go.mod h1:h95M7Ih4MZqO1+Dir0S+joy170I4NrPYaqQFInebWzo=
 github.com/pierrec/lz4/v4 v4.1.27 h1:+PhzhWDrjRj89TH2sw43nE3+4+W8lSxIuQadEHZyjUk=
 github.com/pierrec/lz4/v4 v4.1.27/go.mod h1:EoQMVJgeeEOMsCqCzqFm2O0cJvljX2nGZjcRIPL34O4=
 golang.org/x/sys v0.46.0 h1:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw=
