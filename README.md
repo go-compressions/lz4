@@ -26,19 +26,41 @@ time goes to FSE/Huffman).
 
 ## Performance
 
-Encoding a 1 MiB redundant corpus (Apple Silicon, arm64):
+Encoding a 1 MiB redundant corpus, `-count=6`/`-count=8` medians,
+**re-benched as of 2026-06-14** (matchlen kernels unchanged — this is a
+freshness/confirmation pass).
 
-| encoder | throughput | vs scalar |
-|---|---|---|
-| this package, **matchlen SIMD** | **~5.6 GB/s** | **~2.3x** |
-| this package, scalar match-count | ~2.4 GB/s | 1.0x |
-| `pierrec/lz4` (reference) | ~5.2 GB/s | — |
+**Native arm64 (Apple Silicon, this host):**
 
-The SIMD common-prefix primitive gives **~2.3x** over a scalar match-count, and
-with an LZ4-style search-step acceleration and a zero-init hash table the package
-is **on par with — slightly ahead of — `pierrec/lz4`** here, at an essentially
-identical compression ratio (≈0.065), blocks mutually decodable. (Measured
-interleaved to cancel machine drift; results are corpus-dependent.)
+| encoder | throughput | vs our scalar | vs `pierrec` |
+|---|---:|---:|---:|
+| this package, **matchlen SIMD** | ~4.5 GB/s | **~2.1×** | ~0.86× |
+| this package, scalar match-count | ~2.1 GB/s | 1.0× | — |
+| `pierrec/lz4` (reference) | ~5.3 GB/s | — | 1.0× |
+
+**amd64 (QEMU x86_64 lima VM — TCG, so absolutes are low; the *ratios* are the signal):**
+
+| encoder | throughput | vs our scalar | vs `pierrec` |
+|---|---:|---:|---:|
+| this package, **matchlen SIMD** | ~0.22 GB/s | **~1.9×** | ~0.67× |
+| this package, scalar match-count | ~0.12 GB/s | 1.0× | — |
+| `pierrec/lz4` (reference) | ~0.33 GB/s | — | 1.0× |
+
+**Honest finding (verdict updated).** The SIMD common-prefix primitive is the
+real, confirmed contribution: it gives **~1.9–2.1× over our scalar match-count**
+on both arches, and lz4 inherits it for free via `matchlen.MatchLen`. However the
+earlier "slightly ahead of `pierrec/lz4`" claim **did not reproduce** in this
+pass — on both native arm64 (~0.86×) and the amd64 TCG VM (~0.67×) **`pierrec` is
+ahead end-to-end**. That is expected and honest: `pierrec/lz4` is a mature,
+heavily-tuned whole-block encoder, whereas this package pairs the fast `MatchLen`
+primitive with a deliberately simple greedy compressor — so a faster *match
+count* does not by itself overtake a better *parse/search* strategy. Compression
+ratio stays essentially identical (≈0.065) and blocks remain mutually decodable.
+The takeaway: **matchlen SIMD is a clear win over scalar match-counting; the
+end-to-end gap to `pierrec` is closed by encoder tuning, not by the kernel.**
+(`matchlen` ships SIMD on all six 64-bit Go targets; native ppc64le/s390x
+throughput is pending hardware — see the `matchlen` repo for its per-arch
+llvm-mca cycle estimates.)
 
 ## License
 
