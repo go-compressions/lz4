@@ -2,6 +2,10 @@
 
 # lz4
 
+[![ci](https://github.com/go-compressions/lz4/actions/workflows/ci.yml/badge.svg)](https://github.com/go-compressions/lz4/actions/workflows/ci.yml)
+![coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-compressions/lz4.svg)](https://pkg.go.dev/github.com/go-compressions/lz4)
+
 A clean Go implementation of the **LZ4 block format** (`CompressBlock` /
 `DecompressBlock`), wire-compatible with the reference (cross-checked against
 `pierrec/lz4`). Its compressor delegates LZ4's hot "count the matching bytes"
