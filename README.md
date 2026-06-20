@@ -19,7 +19,11 @@ dispatches per-arch, so the bulk match now runs vectorized on ppc64le and s390x
 too. **ppc64le is now natively measured on real POWER10** (GCC Compile Farm, VSX,
 Go 1.26.4, June 2026): encode ~1.8× scalar (1174 vs 644 MB/s) and it **beats
 `pierrec/lz4`** there (1174 vs 1012 MB/s) — the matchlen-accelerated extension
-pays off. s390x stays qemu-validated for correctness only; native s390x
+pays off. **riscv64 is now natively measured too** on a SpacemiT X60 (RVV 1.0, a
+low-power in-order core — the only widely-available RVV silicon; GCC Compile
+Farm, Go 1.26.4, June 2026): encode **~1.45× scalar (110 vs 76 MB/s)** and it
+**beats `pierrec/lz4`** there (110 vs 83 MB/s → ~1.32×); an out-of-order RVV core
+would likely do better. s390x stays qemu-validated for correctness only; native s390x
 throughput is pending (no GitHub-hosted IBM Z runner). The library is also
 build+test validated bit-exact on **ppc64 (big-endian)** on real POWER9 silicon
 (the generic/scalar fallback path) — **six SIMD targets, validated on seven
@@ -82,8 +86,11 @@ decodable with `pierrec` in both directions, verified on arm64 and amd64.
 (`matchlen` ships SIMD on all six 64-bit Go targets. On **native POWER10**
 ppc64le this encoder reaches **1174 MB/s — ~1.8× scalar and ahead of `pierrec`'s
 1012 MB/s** there, since match-finding is comparatively less dominant on that
-core; s390x native throughput stays pending. Build+test validated bit-exact on
-ppc64 big-endian too — six SIMD targets, seven validated architectures.)
+core; on **native riscv64** (SpacemiT X60, RVV 1.0 — a low-power in-order core,
+the only widely-available RVV silicon) it reaches **110 MB/s — ~1.45× scalar and
+ahead of `pierrec`'s 83 MB/s** (~1.32×); s390x native throughput stays pending.
+Build+test validated bit-exact on ppc64 big-endian too — six SIMD targets, seven
+validated architectures.)
 
 ## License
 
