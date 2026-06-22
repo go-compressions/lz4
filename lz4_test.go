@@ -110,6 +110,29 @@ func TestDecompressCorrupt(t *testing.T) {
 	}
 }
 
+// TestDecompressGrow exercises matchCopy's capacity-grow path: when the dstCap
+// hint underestimates the decompressed size, the match copy must append-grow
+// the output instead of index-writing into spare capacity. We pass dstCap 0 so
+// every literal append and every match copy has to grow.
+func TestDecompressGrow(t *testing.T) {
+	for i, src := range testInputs() {
+		got, err := DecompressBlock(CompressBlock(src), 0)
+		if err != nil {
+			t.Fatalf("input %d: %v", i, err)
+		}
+		if !bytes.Equal(got, src) {
+			t.Fatalf("input %d: grow-path round-trip mismatch (%d vs %d bytes)", i, len(got), len(src))
+		}
+	}
+	// A pure run-length fill (offset 1, long match) over an undersized hint
+	// drives the overlapping doubling loop through a grow.
+	run := bytes.Repeat([]byte{'Z'}, 5000)
+	got, err := DecompressBlock(CompressBlock(run), 1)
+	if err != nil || !bytes.Equal(got, run) {
+		t.Fatalf("run-length grow: err=%v equal=%v", err, bytes.Equal(got, run))
+	}
+}
+
 func benchCorpus() []byte {
 	mix := make([]byte, 0, 1<<20)
 	base := []byte("The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. ")

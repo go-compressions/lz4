@@ -190,6 +190,13 @@ func emitLast(dst, lits []byte) []byte {
 
 // DecompressBlock decompresses an LZ4 block. dstCap is a hint for the output
 // capacity (the decompressed size if known).
+//
+// The two inner loops — copy `ll` literals, then copy an `ml`-byte match from
+// `offset` back in the output — are the whole cost of decode. Both are done in
+// bulk: literals with the runtime's word-at-a-time copy, and the match with
+// matchCopy, which uses copy() for non-overlapping runs (offset >= ml) and an
+// exponential pattern-fill for the overlapping case (offset < ml). The naive
+// byte-at-a-time match loop pierrec beats us on is gone.
 func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 	dst := make([]byte, 0, dstCap)
 	ip := 0
@@ -241,12 +248,52 @@ func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 		if offset <= 0 || mpos < 0 {
 			return nil, errCorrupt
 		}
-		for k := 0; k < ml; k++ {
-			dst = append(dst, dst[mpos])
-			mpos++
-		}
+		dst = matchCopy(dst, mpos, ml)
 	}
 	return dst, nil
+}
+
+// matchCopy appends an ml-byte LZ4 match to dst, copying from dst[mpos:]. The
+// destination region [len(dst), len(dst)+ml) overlaps the source [mpos, mpos+ml)
+// whenever offset (= len(dst)-mpos) < ml, which LZ4 uses for run-length fills
+// (e.g. offset 1 = repeat one byte). The result must be byte-identical to the
+// scalar `for k := 0; k < ml; k++ { dst = append(dst, dst[mpos+k]) }` loop:
+// each output byte reads the byte one offset earlier in the *output being
+// built*, so already-written bytes feed later ones.
+//
+//   - offset >= ml: source and destination are disjoint, so a single copy() —
+//     the runtime's word-at-a-time memmove — is exact.
+//   - offset < ml: the first `offset` bytes are the pattern; we grow the
+//     written region by repeatedly copying what we already have onto the tail,
+//     doubling the copied length each step. copy() within one slice handles the
+//     forward overlap correctly because each doubling copies a region that is
+//     fully written before it is read.
+func matchCopy(dst []byte, mpos, ml int) []byte {
+	start := len(dst)
+	offset := start - mpos
+	// Grow once to the final length; index-write into the tail.
+	if start+ml <= cap(dst) {
+		dst = dst[:start+ml]
+	} else {
+		dst = append(dst, make([]byte, ml)...)
+	}
+	out := dst[start:] // length ml, the region to fill
+	if offset >= ml {
+		copy(out, dst[mpos:mpos+ml])
+		return dst
+	}
+	// Overlapping: lay down the `offset`-byte pattern, then double it.
+	copy(out[:offset], dst[mpos:start])
+	filled := offset
+	for filled < ml {
+		n := filled
+		if filled+n > ml {
+			n = ml - filled
+		}
+		copy(out[filled:filled+n], out[:n])
+		filled += n
+	}
+	return dst
 }
 
 type lzError string
