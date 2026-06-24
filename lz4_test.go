@@ -95,8 +95,10 @@ func TestDecompressCorrupt(t *testing.T) {
 		{"literals past end", []byte{0x30, 0x41}},
 		// literals consumed, but the 2-byte offset is missing.
 		{"missing offset", []byte{0x10, 'a', 0x01}},
-		// match-length nibble is 15 but the match-length varint is truncated.
-		{"trunc match-length varint", []byte{0x0F, 0x01, 0x00}},
+		// 4 literals then a match whose nibble is 15 (so the match length is
+		// read from a varint) but the varint is truncated. The literals make
+		// the back-reference (offset 2) valid so decode reaches the varint loop.
+		{"trunc match-length varint", []byte{0x4F, 'a', 'a', 'a', 'a', 0x02, 0x00}},
 		// offset of zero is invalid (no back-reference possible).
 		{"zero offset", []byte{0x10, 'a', 0x00, 0x00}},
 	}
@@ -130,6 +132,13 @@ func TestDecompressGrow(t *testing.T) {
 	got, err := DecompressBlock(CompressBlock(run), 1)
 	if err != nil || !bytes.Equal(got, run) {
 		t.Fatalf("run-length grow: err=%v equal=%v", err, bytes.Equal(got, run))
+	}
+	// A negative capacity hint is clamped to zero rather than panicking the
+	// make(); decode still grows to the real size.
+	hello := []byte("hello hello hello hello world")
+	got, err = DecompressBlock(CompressBlock(hello), -1)
+	if err != nil || !bytes.Equal(got, hello) {
+		t.Fatalf("negative hint: err=%v equal=%v", err, bytes.Equal(got, hello))
 	}
 }
 

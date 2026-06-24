@@ -191,19 +191,27 @@ func emitLast(dst, lits []byte) []byte {
 // DecompressBlock decompresses an LZ4 block. dstCap is a hint for the output
 // capacity (the decompressed size if known).
 //
-// The two inner loops — copy `ll` literals, then copy an `ml`-byte match from
-// `offset` back in the output — are the whole cost of decode. Both are done in
-// bulk: literals with the runtime's word-at-a-time copy, and the match with
-// matchCopy, which uses copy() for non-overlapping runs (offset >= ml) and an
-// exponential pattern-fill for the overlapping case (offset < ml). The naive
-// byte-at-a-time match loop pierrec beats us on is gone.
+// The decode hot loop follows pierrec/lz4's pure-Go structure, which is ~2×
+// faster than a naive append-based loop: the output is written by *index* into
+// a preallocated buffer (no per-token slice-append cap checks), and the two
+// dominant cases — a literal run of ≤16 bytes and a non-overlapping match of
+// ≤16 bytes — each take a *fixed* 16-byte copy that the compiler lowers to a
+// couple of word moves, with no length-variable copy() call and no overlap
+// loop. Longer/overlapping runs fall to the bulk copy paths.
+//
+// The buffer is overallocated by decodeSlack bytes so those unconditional
+// 16-byte copies never run off the end; the real output length is di.
 func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
-	dst := make([]byte, 0, dstCap)
+	if dstCap < 0 {
+		dstCap = 0
+	}
+	dst := make([]byte, dstCap+decodeSlack)
+	di := 0 // bytes written so far == real output length
 	ip := 0
 	for ip < len(src) {
-		token := src[ip]
+		token := int(src[ip])
 		ip++
-		ll := int(token >> 4)
+		ll := token >> 4
 		if ll == 15 {
 			for {
 				if ip >= len(src) {
@@ -220,8 +228,19 @@ func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 		if ip+ll > len(src) {
 			return nil, errCorrupt
 		}
-		dst = append(dst, src[ip:ip+ll]...)
+		// Ensure room for the literals plus the 16-byte shortcut overrun.
+		if di+ll+decodeSlack > len(dst) {
+			dst = growDecode(dst, di+ll+decodeSlack)
+		}
+		if ll <= 16 && ip+16 <= len(src) {
+			// Shortcut 1: enough slack in src and dst — copy a fixed 16
+			// bytes (the compiler inlines it), even if only ll are literals.
+			copy(dst[di:di+16], src[ip:ip+16])
+		} else {
+			copy(dst[di:di+ll], src[ip:ip+ll])
+		}
 		ip += ll
+		di += ll
 		if ip == len(src) {
 			break
 		}
@@ -230,8 +249,23 @@ func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 		}
 		offset := int(src[ip]) | int(src[ip+1])<<8
 		ip += 2
-		ml := int(token&0x0F) + minMatch
-		if token&0x0F == 15 {
+		ml := token&0x0F + minMatch
+		mpos := di - offset
+		if offset <= 0 || mpos < 0 {
+			return nil, errCorrupt
+		}
+		if ml <= 16 {
+			// Shortcut 2: a short match (ml <= 16) that is fully behind di
+			// (ml <= offset, so source and the 16-byte copy don't overlap) and
+			// has output room — one fixed 16-byte copy the compiler inlines,
+			// then on to the next token. The bytes past ml are a harmless
+			// read-ahead that the next write overwrites.
+			if ml <= offset && di+16 <= len(dst) {
+				copy(dst[di:di+16], dst[mpos:mpos+16])
+				di += ml
+				continue
+			}
+		} else if token&0x0F == 15 {
 			for {
 				if ip >= len(src) {
 					return nil, errCorrupt
@@ -244,56 +278,59 @@ func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 				}
 			}
 		}
-		mpos := len(dst) - offset
-		if offset <= 0 || mpos < 0 {
-			return nil, errCorrupt
+		if di+ml+decodeSlack > len(dst) {
+			dst = growDecode(dst, di+ml+decodeSlack)
 		}
-		dst = matchCopy(dst, mpos, ml)
+		di = matchCopy(dst, di, mpos, ml)
 	}
-	return dst, nil
+	return dst[:di], nil
 }
 
-// matchCopy appends an ml-byte LZ4 match to dst, copying from dst[mpos:]. The
-// destination region [len(dst), len(dst)+ml) overlaps the source [mpos, mpos+ml)
-// whenever offset (= len(dst)-mpos) < ml, which LZ4 uses for run-length fills
-// (e.g. offset 1 = repeat one byte). The result must be byte-identical to the
-// scalar `for k := 0; k < ml; k++ { dst = append(dst, dst[mpos+k]) }` loop:
-// each output byte reads the byte one offset earlier in the *output being
-// built*, so already-written bytes feed later ones.
+// decodeSlack is the overrun the ≤16-byte shortcut copies may write past the
+// logical end of the output; the decode buffer always keeps this much spare.
+const decodeSlack = 16
+
+// growDecode grows dst to at least n bytes (amortised doubling), preserving its
+// contents. It is only hit when the dstCap hint underestimates the output.
+func growDecode(dst []byte, n int) []byte {
+	c := cap(dst) * 2
+	if c < n {
+		c = n
+	}
+	grown := make([]byte, c)
+	copy(grown, dst)
+	return grown
+}
+
+// matchCopy writes an ml-byte LZ4 match into dst[di:di+ml], copying from
+// dst[mpos:] (mpos = di-offset), and returns the new write index di+ml. The
+// caller has already ensured dst has room. The destination region overlaps the
+// source whenever offset (= di-mpos) < ml, which LZ4 uses for run-length fills
+// (e.g. offset 1 = repeat one byte). The result is byte-identical to the scalar
+// `for k := 0; k < ml; k++ { dst[di+k] = dst[mpos+k] }` loop: each output byte
+// reads the byte one offset earlier in the *output being built*.
 //
 //   - offset >= ml: source and destination are disjoint, so a single copy() —
 //     the runtime's word-at-a-time memmove — is exact.
-//   - offset < ml: the first `offset` bytes are the pattern; we grow the
-//     written region by repeatedly copying what we already have onto the tail,
-//     doubling the copied length each step. copy() within one slice handles the
-//     forward overlap correctly because each doubling copies a region that is
-//     fully written before it is read.
-func matchCopy(dst []byte, mpos, ml int) []byte {
-	start := len(dst)
-	offset := start - mpos
-	// Grow once to the final length; index-write into the tail.
-	if start+ml <= cap(dst) {
-		dst = dst[:start+ml]
-	} else {
-		dst = append(dst, make([]byte, ml)...)
-	}
-	out := dst[start:] // length ml, the region to fill
+//   - offset < ml: lay down the `offset`-byte pattern, then double it forward;
+//     copy() within one slice handles the forward overlap correctly because
+//     each doubling copies a region that is fully written before it is read.
+func matchCopy(dst []byte, di, mpos, ml int) int {
+	offset := di - mpos
 	if offset >= ml {
-		copy(out, dst[mpos:mpos+ml])
-		return dst
+		copy(dst[di:di+ml], dst[mpos:mpos+ml])
+		return di + ml
 	}
-	// Overlapping: lay down the `offset`-byte pattern, then double it.
-	copy(out[:offset], dst[mpos:start])
-	filled := offset
-	for filled < ml {
-		n := filled
-		if filled+n > ml {
-			n = ml - filled
-		}
-		copy(out[filled:filled+n], out[:n])
-		filled += n
+	// Overlapping run-length fill (offset < ml). expanded is the output region
+	// being grown, starting at the match source mpos and running to di+ml. We
+	// double the already-written pattern forward; each copy is clamped to the
+	// region's end so it never runs past the buffer. This is pierrec/lz4's
+	// expansion (clamped instead of relying on an exactly-sized dst).
+	expanded := dst[mpos : di+ml]
+	for n := offset; n < len(expanded); n *= 2 {
+		copy(expanded[n:], expanded[:n])
 	}
-	return dst
+	return di + ml
 }
 
 type lzError string
