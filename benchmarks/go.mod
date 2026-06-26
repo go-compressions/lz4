@@ -12,7 +12,7 @@ require (
 )
 
 require (
-	github.com/go-simd/matchlen v0.3.0 // indirect
+	github.com/go-simd/matchlen v0.3.1 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 )
 
