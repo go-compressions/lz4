@@ -16,12 +16,12 @@ As of `matchlen` **v0.3.0**, that kernel ships SIMD on **all six** of Go's 64-bi
 targets — amd64 (SSE2), arm64 (NEON), riscv64 (RVV), loong64 (LSX), ppc64le (VSX)
 and s390x (vector facility). lz4 needs **no code change** to benefit: `MatchLen`
 dispatches per-arch, so the bulk match now runs vectorized on ppc64le and s390x
-too. **ppc64le is now natively measured on real POWER10** (GCC Compile Farm, VSX,
-Go 1.26.4, June 2026): encode ~1.8× scalar (1174 vs 644 MB/s) and it **beats
+too. **ppc64le is now natively measured on real POWER9** (GCC Compile Farm, VSX,
+Go 1.26.4, 2026-06-26): encode ~1.8× scalar (1174 vs 644 MB/s) and it **beats
 `pierrec/lz4`** there (1174 vs 1012 MB/s) — the matchlen-accelerated extension
 pays off. **riscv64 is now natively measured too** on a SpacemiT X60 (RVV 1.0, a
 low-power in-order core — the only widely-available RVV silicon; GCC Compile
-Farm, Go 1.26.4, June 2026): encode **~1.45× scalar (110 vs 76 MB/s)** and it
+Farm, Go 1.26.4, 2026-06-26): encode **~1.45× scalar (110 vs 76 MB/s)** and it
 **beats `pierrec/lz4`** there (110 vs 83 MB/s → ~1.32×); an out-of-order RVV core
 would likely do better. s390x stays qemu-validated for correctness only; native s390x
 throughput is pending (no GitHub-hosted IBM Z runner). The library is also
@@ -83,7 +83,7 @@ trading a little ratio for speed; we make the opposite trade. The SIMD
 `matchlen` extension is correct and in use, but match extension is only ~10% of
 encode time here — the bottleneck is match-*finding*. Blocks remain mutually
 decodable with `pierrec` in both directions, verified on arm64 and amd64.
-(`matchlen` ships SIMD on all six 64-bit Go targets. On **native POWER10**
+(`matchlen` ships SIMD on all six 64-bit Go targets. On **native POWER9**
 ppc64le this encoder reaches **1174 MB/s — ~1.8× scalar and ahead of `pierrec`'s
 1012 MB/s** there, since match-finding is comparatively less dominant on that
 core; on **native riscv64** (SpacemiT X60, RVV 1.0 — a low-power in-order core,
