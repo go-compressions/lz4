@@ -39,7 +39,21 @@ func testInputs() [][]byte {
 			mix = append(mix, base...)
 		}
 	}
-	return append(in, mix)
+	in = append(in, mix)
+	// A large, semi-compressible input well over 64 KiB (>256 KiB), so the
+	// cross-compatibility test exercises blocks with offsets and lengths far
+	// beyond the small-input regime in both directions.
+	big := make([]byte, 0, 300000)
+	for len(big) < 300000 {
+		if rng.Intn(4) == 0 {
+			b := make([]byte, 16)
+			rng.Read(b)
+			big = append(big, b...)
+		} else {
+			big = append(big, base...)
+		}
+	}
+	return append(in, big)
 }
 
 func TestRoundTrip(t *testing.T) {
@@ -59,8 +73,9 @@ func TestCrossCompatPierrec(t *testing.T) {
 		if len(src) == 0 {
 			continue
 		}
-		// our block decoded by pierrec
-		out := make([]byte, len(src))
+		// our block decoded by pierrec. pierrec's UncompressBlock wants a
+		// destination strictly larger than the decoded size, so add slack.
+		out := make([]byte, len(src)+1)
 		n, err := plz4.UncompressBlock(CompressBlock(src), out)
 		if err != nil || !bytes.Equal(out[:n], src) {
 			t.Fatalf("input %d: pierrec failed to decode our block: %v", i, err)
