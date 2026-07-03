@@ -206,7 +206,24 @@ func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 		dstCap = 0
 	}
 	dst := make([]byte, dstCap+decodeSlack)
-	di := 0 // bytes written so far == real output length
+	dst, di, err := decodeInto(dst, 0, src)
+	if err != nil {
+		return nil, err
+	}
+	return dst[:di], nil
+}
+
+// decodeInto decodes a single LZ4 block src into dst, starting writes at index
+// diStart, and returns the (possibly grown) buffer and the new write index.
+//
+// Matches may reference any earlier byte in dst — including bytes written
+// before diStart. That "dictionary" behaviour is what Apple's LZ4 frame format
+// relies on: each 64 KiB block's matches may reach back into the previous
+// block's output (a shared 64 KiB window). Callers that decode an isolated
+// block pass diStart == 0; DecompressApple prefixes the previous window and
+// passes diStart == len(window).
+func decodeInto(dst []byte, diStart int, src []byte) ([]byte, int, error) {
+	di := diStart // bytes written so far (dst[:di] is valid output + history)
 	ip := 0
 	for ip < len(src) {
 		token := int(src[ip])
@@ -215,7 +232,7 @@ func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 		if ll == 15 {
 			for {
 				if ip >= len(src) {
-					return nil, errCorrupt
+					return nil, 0, errCorrupt
 				}
 				b := src[ip]
 				ip++
@@ -226,7 +243,7 @@ func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 			}
 		}
 		if ip+ll > len(src) {
-			return nil, errCorrupt
+			return nil, 0, errCorrupt
 		}
 		// Ensure room for the literals plus the 16-byte shortcut overrun.
 		if di+ll+decodeSlack > len(dst) {
@@ -245,14 +262,14 @@ func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 			break
 		}
 		if ip+2 > len(src) {
-			return nil, errCorrupt
+			return nil, 0, errCorrupt
 		}
 		offset := int(src[ip]) | int(src[ip+1])<<8
 		ip += 2
 		ml := token&0x0F + minMatch
 		mpos := di - offset
 		if offset <= 0 || mpos < 0 {
-			return nil, errCorrupt
+			return nil, 0, errCorrupt
 		}
 		if ml <= 16 {
 			// Shortcut 2: a short match (ml <= 16) that is fully behind di
@@ -268,7 +285,7 @@ func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 		} else if token&0x0F == 15 {
 			for {
 				if ip >= len(src) {
-					return nil, errCorrupt
+					return nil, 0, errCorrupt
 				}
 				b := src[ip]
 				ip++
@@ -283,7 +300,7 @@ func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 		}
 		di = matchCopy(dst, di, mpos, ml)
 	}
-	return dst[:di], nil
+	return dst, di, nil
 }
 
 // decodeSlack is the overrun the ≤16-byte shortcut copies may write past the
