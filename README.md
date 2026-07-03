@@ -34,6 +34,30 @@ c := lz4.CompressBlock(src)
 out, _ := lz4.DecompressBlock(c, len(src))
 ```
 
+## Apple LZ4 frame format
+
+macOS's Compression framework (`COMPRESSION_LZ4`) and Apple tooling built on it
+— such as [Tart](https://github.com/cirruslabs/tart), whose disk layers are
+`.compressed(using: .lz4)` — do **not** emit a bare LZ4 block. They emit a
+*frame*: a sequence of `bv41` (compressed), `bv4-` (stored) and `bv4$` (end)
+blocks, little-endian, where a compressed block's matches may reference the
+previous block's output through a shared **64 KiB sliding window** (LZ4 offsets
+are 16-bit). This is the LZ4 sibling of the `bvx*` frame that
+[`go-compressions/lzfse`](https://github.com/go-compressions/lzfse) decodes.
+
+```go
+// Streaming (bounded memory: one block + the 64 KiB window) — use this for
+// large inputs such as Tart disk layers.
+n, err := lz4.DecompressAppleStream(dst /* io.Writer */, src /* io.Reader */)
+
+// Whole-buffer convenience.
+out, err := lz4.DecompressApple(frameBytes)
+```
+
+Validated against real Apple output: a `cirruslabs/macos-sequoia-base` Tart disk
+layer decodes byte-for-byte to the length and SHA-256 recorded in its
+`org.cirruslabs.tart.uncompressed-*` OCI annotations.
+
 ## Why LZ4 is the ideal matchlen consumer
 
 LZ4 has **no entropy-coding stage** — encode time is dominated by match-finding
