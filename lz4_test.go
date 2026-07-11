@@ -54,6 +54,64 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRoundTripMaxDistance guards the 16-bit-offset boundary. LZ4 stores the
+// match offset in a 16-bit field, so the largest encodable distance is 65535
+// (winSize-1); a match at distance exactly 65536 would encode as offset 0 and
+// be rejected as a corrupt block on decode. The match-finder must therefore
+// never select a distance == winSize.
+//
+// Regression: the finder previously bounded distances with `<= winSize`, which
+// admitted distance 65536. It went unnoticed because every prior round-trip
+// input was under 64 KiB, so no such distance could arise. These inputs are
+// large enough (and compressible enough) that the finder discovers matches at
+// the full window edge.
+func TestRoundTripMaxDistance(t *testing.T) {
+	rng := rand.New(rand.NewSource(9))
+	// Mixed compressible corpus at several sizes straddling the point where a
+	// 64 KiB back-reference first becomes reachable.
+	base := []byte("the quick brown fox jumps over the lazy dog 0123456789 ")
+	for _, n := range []int{1 << 17, 1 << 18, 1 << 19, 1700000} {
+		mix := make([]byte, 0, n)
+		for len(mix) < n {
+			if rng.Intn(4) == 0 {
+				b := make([]byte, 32)
+				rng.Read(b)
+				mix = append(mix, b...)
+			} else {
+				mix = append(mix, base...)
+			}
+		}
+		mix = mix[:n]
+		got, err := DecompressBlock(CompressBlock(mix), len(mix))
+		if err != nil {
+			t.Fatalf("n=%d: %v", n, err)
+		}
+		if !bytes.Equal(got, mix) {
+			t.Fatalf("n=%d: round-trip mismatch (%d vs %d bytes)", n, len(got), n)
+		}
+	}
+
+	// Deterministic worst case: place an exact copy of a 200-byte run precisely
+	// 65536 bytes after the original so the only available match is at the
+	// forbidden distance. A correct finder must fall back to a shorter/closer
+	// match or literals; either way the block must round-trip.
+	src := make([]byte, 70000)
+	for i := range src {
+		src[i] = byte(i*137 + 11)
+	}
+	run := make([]byte, 200)
+	rng.Read(run)
+	copy(src[0:], run)
+	copy(src[65536:], run) // identical run at distance exactly 65536
+	got, err := DecompressBlock(CompressBlock(src), len(src))
+	if err != nil {
+		t.Fatalf("distance-65536 fixture: %v", err)
+	}
+	if !bytes.Equal(got, src) {
+		t.Fatal("distance-65536 fixture: round-trip mismatch")
+	}
+}
+
 func TestCrossCompatPierrec(t *testing.T) {
 	for i, src := range testInputs() {
 		if len(src) == 0 {
