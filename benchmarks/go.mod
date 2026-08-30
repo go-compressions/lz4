@@ -4,11 +4,11 @@
 // of the library's tested surface.
 module github.com/go-compressions/lz4/benchmarks
 
-go 1.26
+go 1.26.4
 
 require (
 	github.com/go-compressions/lz4 v0.0.0
-	github.com/pierrec/lz4/v4 v4.1.27
+	github.com/pierrec/lz4/v4 v4.1.29
 )
 
 require (
