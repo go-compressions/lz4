@@ -8,7 +8,7 @@ go 1.26.4
 
 require (
 	github.com/go-compressions/lz4 v0.1.1
-	github.com/pierrec/lz4/v4 v4.1.29
+	github.com/pierrec/lz4/v4 v4.1.30
 )
 
 require (
