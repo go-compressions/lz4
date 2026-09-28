@@ -1,3 +1,5 @@
+github.com/go-compressions/appleoracle v0.1.0 h1:y+n8/DkELQSBpKuJYk8/AqPti8RQHu6aZ3HlYXx8rsc=
+github.com/go-compressions/appleoracle v0.1.0/go.mod h1:RiGYXHs53BFJKPfHJebEXP6qClJAnNBDYbR16rPb+CY=
 github.com/go-simd/matchlen v0.3.1 h1:HKyOis1LaXPGEr8esAj8wkOhrjK7W24P7RlMYbTHyk4=
 github.com/go-simd/matchlen v0.3.1/go.mod h1:h95M7Ih4MZqO1+Dir0S+joy170I4NrPYaqQFInebWzo=
 github.com/pierrec/lz4/v4 v4.1.30 h1:cchX8N2DVP668WkElI9QMwVyoNabLkq1LofDHFeIrdg=
