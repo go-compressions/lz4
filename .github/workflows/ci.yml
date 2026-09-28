@@ -24,6 +24,29 @@ jobs:
           pct=$(go tool cover -func=cov.out | awk '/^total:/{print $3}')
           echo "coverage=$pct"
           [ "$pct" = "100.0%" ] || { echo "coverage below 100%"; exit 1; }
+  # Apple's own encoder is the only witness for apple.go that did not come from
+  # the same author as the decoder, and it exists on exactly one runner. Without
+  # this job the oracle tests skip everywhere and a suite of skips is green --
+  # which would make them indistinguishable from not having written them.
+  darwin:
+    name: Apple's own encoder (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: stable }
+      - name: test against libcompression
+        run: CGO_ENABLED=1 go test -count=1 -v ./... 2>&1 | tee out.txt
+      - name: the oracle tests must have RUN, not skipped
+        run: |
+          for t in TestDecompressAppleReadsWhatAppleWrote \
+                   TestAHighlyCompressibleStreamCrossesBlocks \
+                   TestTheOracleIsNotAgreeingWithAnything; do
+            grep -q -- "--- PASS: $t" out.txt || {
+              echo "::error::$t did not run on the one runner that can ask Apple"; exit 1; }
+          done
+          echo "all three oracle tests ran"
+
   emulated:
     runs-on: ubuntu-latest
     strategy:
