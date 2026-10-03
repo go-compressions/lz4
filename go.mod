@@ -2,7 +2,7 @@ module github.com/go-compressions/lz4
 
 go 1.26.4
 
-require github.com/pierrec/lz4/v4 v4.1.31
+require github.com/pierrec/lz4/v4 v4.1.33
 
 require (
 	github.com/go-compressions/appleoracle v0.1.0
