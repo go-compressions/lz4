@@ -11,6 +11,8 @@ package lz4
 
 import (
 	"encoding/binary"
+	"errors"
+	"math"
 
 	"github.com/go-simd/matchlen"
 )
@@ -201,12 +203,42 @@ func emitLast(dst, lits []byte) []byte {
 //
 // The buffer is overallocated by decodeSlack bytes so those unconditional
 // 16-byte copies never run off the end; the real output length is di.
+//
+// The result is at most [DefaultMaxOutput] bytes: LZ4 turns a handful of bytes
+// into many (a match length is extended by any number of 0xFF bytes, each worth
+// 255 output bytes), so only a ceiling bounds it. Use [DecompressBlockLimit] to
+// choose another. dstCap is only a hint: it is clamped to what src can produce
+// and to the ceiling, so an untrusted size header passed as dstCap allocates
+// nothing it did not earn.
 func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
-	if dstCap < 0 {
-		dstCap = 0
+	return DecompressBlockLimit(src, dstCap, DefaultMaxOutput)
+}
+
+// DefaultMaxOutput is the most bytes [DecompressBlock] returns: 1 GiB.
+const DefaultMaxOutput = 1 << 30
+
+// ErrTooLarge reports a block that would decompress past the ceiling.
+var ErrTooLarge = errors.New("lz4: decompressed size past the ceiling")
+
+// maxExpansion is the most output bytes one input byte can produce. A literal
+// byte yields 1; a sequence's token, 16-bit offset and length-extension bytes
+// yield at most 15+4 plus 255 per 0xFF extension byte, so no input byte
+// yields more than 255 (lz4_Block_format.md: "a maximum achievable
+// compression ratio of about ~250").
+const maxExpansion = 255
+
+// DecompressBlockLimit is [DecompressBlock] refusing, with [ErrTooLarge], a
+// block that produces more than maxOut bytes. The refusal comes before the
+// buffer that would exceed maxOut is allocated.
+func DecompressBlockLimit(src []byte, dstCap, maxOut int) ([]byte, error) {
+	// Clamped so maxOut+decodeSlack and di+ml cannot overflow an int.
+	maxOut = max(0, min(maxOut, math.MaxInt/2))
+	dstCap = max(0, min(dstCap, maxOut))
+	if len(src) <= math.MaxInt/maxExpansion {
+		dstCap = min(dstCap, maxExpansion*len(src))
 	}
 	dst := make([]byte, dstCap+decodeSlack)
-	dst, di, err := decodeInto(dst, 0, src)
+	dst, di, err := decodeInto(dst, 0, src, maxOut)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +254,13 @@ func DecompressBlock(src []byte, dstCap int) ([]byte, error) {
 // block's output (a shared 64 KiB window). Callers that decode an isolated
 // block pass diStart == 0; DecompressApple prefixes the previous window and
 // passes diStart == len(window).
-func decodeInto(dst []byte, diStart int, src []byte) ([]byte, int, error) {
+//
+// maxEnd is the largest write index the output may reach (window included);
+// past it decodeInto returns ErrTooLarge instead of growing dst. dst never
+// grows beyond maxEnd+decodeSlack, so the check lives on the grow path and
+// costs the hot loop nothing; the shortcut copies can overshoot maxEnd by
+// less than decodeSlack, which the check after the loop catches.
+func decodeInto(dst []byte, diStart int, src []byte, maxEnd int) ([]byte, int, error) {
 	di := diStart // bytes written so far (dst[:di] is valid output + history)
 	ip := 0
 	for ip < len(src) {
@@ -237,6 +275,9 @@ func decodeInto(dst []byte, diStart int, src []byte) ([]byte, int, error) {
 				b := src[ip]
 				ip++
 				ll += int(b)
+				if ll > len(src) { // also stops int overflow on 32-bit
+					return nil, 0, errCorrupt
+				}
 				if b != 255 {
 					break
 				}
@@ -247,7 +288,10 @@ func decodeInto(dst []byte, diStart int, src []byte) ([]byte, int, error) {
 		}
 		// Ensure room for the literals plus the 16-byte shortcut overrun.
 		if di+ll+decodeSlack > len(dst) {
-			dst = growDecode(dst, di+ll+decodeSlack)
+			if di+ll > maxEnd {
+				return nil, 0, ErrTooLarge
+			}
+			dst = growDecode(dst, di+ll+decodeSlack, maxEnd+decodeSlack)
 		}
 		if ll <= 16 && ip+16 <= len(src) {
 			// Shortcut 1: enough slack in src and dst — copy a fixed 16
@@ -290,15 +334,24 @@ func decodeInto(dst []byte, diStart int, src []byte) ([]byte, int, error) {
 				b := src[ip]
 				ip++
 				ml += int(b)
+				if ml > maxEnd { // also stops int overflow on 32-bit
+					return nil, 0, ErrTooLarge
+				}
 				if b != 255 {
 					break
 				}
 			}
 		}
 		if di+ml+decodeSlack > len(dst) {
-			dst = growDecode(dst, di+ml+decodeSlack)
+			if di+ml > maxEnd {
+				return nil, 0, ErrTooLarge
+			}
+			dst = growDecode(dst, di+ml+decodeSlack, maxEnd+decodeSlack)
 		}
 		di = matchCopy(dst, di, mpos, ml)
+	}
+	if di > maxEnd {
+		return nil, 0, ErrTooLarge
 	}
 	return dst, di, nil
 }
@@ -307,10 +360,14 @@ func decodeInto(dst []byte, diStart int, src []byte) ([]byte, int, error) {
 // logical end of the output; the decode buffer always keeps this much spare.
 const decodeSlack = 16
 
-// growDecode grows dst to at least n bytes (amortised doubling), preserving its
-// contents. It is only hit when the dstCap hint underestimates the output.
-func growDecode(dst []byte, n int) []byte {
+// growDecode grows dst to at least n bytes (amortised doubling, but never past
+// limit unless n itself is), preserving its contents. It is only hit when the
+// dstCap hint underestimates the output.
+func growDecode(dst []byte, n, limit int) []byte {
 	c := cap(dst) * 2
+	if c > limit || c < 0 {
+		c = limit
+	}
 	if c < n {
 		c = n
 	}

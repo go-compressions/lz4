@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"slices"
 )
 
 // Apple's LZ4 frame format (the byte stream produced by macOS's Compression
@@ -34,20 +36,82 @@ var (
 // declared raw size).
 var ErrAppleFrame = errors.New("lz4: malformed Apple LZ4 frame")
 
+// DefaultMaxBlock is the largest raw block [DecompressAppleStream] accepts:
+// 16 MiB. The block header declares its raw size in 32 bits, and the decoder
+// holds one whole block in memory. Apple's encoder emits blocks of 64 KiB (the
+// window; measured with compression_encode_buffer on 64 MiB inputs: every
+// block's rawSize <= 65536), so the default is 256 times what it writes;
+// [DecompressAppleStreamLimit] takes another.
+const DefaultMaxBlock = 1 << 24
+
+// readChunk is the first allocation made for a block whose size a header
+// declares; the buffer then doubles only as bytes actually arrive.
+const readChunk = 1 << 16
+
+// readBlock reads exactly n bytes from r. It allocates in proportion to the
+// bytes the stream delivers, not to n: a header declaring 16 MiB over a
+// truncated stream costs readChunk, not 16 MiB.
+func readBlock(r io.Reader, n int) ([]byte, error) {
+	buf := make([]byte, 0, min(n, readChunk))
+	for len(buf) < n {
+		want := min(n-len(buf), max(readChunk, len(buf)))
+		buf = slices.Grow(buf, want)
+		m, err := io.ReadFull(r, buf[len(buf):len(buf)+want])
+		buf = buf[:len(buf)+m]
+		if err != nil {
+			return nil, err
+		}
+	}
+	return buf, nil
+}
+
 // DecompressAppleStream decodes Apple's LZ4 frame format from src, writing the
 // decompressed bytes to dst, and returns the number of bytes written. It streams
 // block by block, holding at most one block plus the 64 KiB cross-block window
 // in memory, so it is safe for multi-gigabyte inputs (e.g. Tart disk layers).
 //
+// A block declaring more than [DefaultMaxBlock] raw bytes is refused with
+// [ErrTooLarge]; see [DecompressAppleStreamLimit].
+//
 // A well-formed frame ends with a "bv4$" marker; a stream that ends before one
 // (including an empty stream) is reported as ErrAppleFrame.
 func DecompressAppleStream(dst io.Writer, src io.Reader) (int64, error) {
+	return DecompressAppleStreamLimit(dst, src, DefaultMaxBlock)
+}
+
+// DecompressAppleStreamLimit is [DecompressAppleStream] refusing, with
+// [ErrTooLarge], any block that declares more than maxBlock raw bytes. The
+// total is not limited (the stream is not held); the memory held is one block,
+// whose size is checked against maxBlock, against what its compressed payload
+// can expand to (LZ4 yields at most 255 bytes per input byte), and, for the
+// payload itself, against the bytes that actually arrive.
+func DecompressAppleStreamLimit(dst io.Writer, src io.Reader, maxBlock int) (int64, error) {
+	return appleStream(dst, src, maxBlock, math.MaxInt64)
+}
+
+// DecompressAppleLimit is [DecompressApple] refusing, with [ErrTooLarge], a
+// frame that would decompress past maxOut bytes in total (or any block past
+// [DefaultMaxBlock]).
+func DecompressAppleLimit(src []byte, maxOut int) ([]byte, error) {
+	var out sliceWriter
+	if _, err := appleStream(&out, &byteReader{b: src}, DefaultMaxBlock, int64(max(0, maxOut))); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func appleStream(dst io.Writer, src io.Reader, maxBlock int, maxTotal int64) (int64, error) {
 	var (
 		written int64
 		window  []byte // up to winSize bytes of previously decoded output
 		magic   [4]byte
 		hdr     [8]byte
 	)
+	// fits reports whether a block of n raw bytes is within both ceilings; a
+	// uint64 compare, so a 32-bit field cannot go negative on a 32-bit build.
+	fits := func(n uint64) bool {
+		return n <= uint64(max(0, maxBlock)) && n <= uint64(maxTotal-written)
+	}
 	for {
 		if _, err := io.ReadFull(src, magic[:]); err != nil {
 			return written, fmt.Errorf("%w: reading block magic: %w", ErrAppleFrame, err)
@@ -60,22 +124,39 @@ func DecompressAppleStream(dst io.Writer, src io.Reader) (int64, error) {
 			if _, err := io.ReadFull(src, hdr[:]); err != nil {
 				return written, fmt.Errorf("%w: reading compressed header: %w", ErrAppleFrame, err)
 			}
-			rawSize := int(binary.LittleEndian.Uint32(hdr[0:4]))
-			compSize := int(binary.LittleEndian.Uint32(hdr[4:8]))
-			payload := make([]byte, compSize)
-			if _, err := io.ReadFull(src, payload); err != nil {
+			rawSize := uint64(binary.LittleEndian.Uint32(hdr[0:4]))
+			compSize := uint64(binary.LittleEndian.Uint32(hdr[4:8]))
+			if !fits(rawSize) {
+				return written, ErrTooLarge
+			}
+			// The payload must be able to produce rawSize (<= 255 bytes per
+			// input byte) and must not be longer than any encoder makes it:
+			// each sequence costs at most 3 bytes of overhead for >= 4 output
+			// bytes, plus one length byte per 255, so compSize stays below
+			// rawSize + rawSize/64 + 64. Both checks run before anything is
+			// allocated from either field.
+			if rawSize > compSize*maxExpansion || compSize > rawSize+rawSize/64+64 {
+				return written, fmt.Errorf("%w: block header declares raw %d, compressed %d bytes", ErrAppleFrame, rawSize, compSize)
+			}
+			payload, err := readBlock(src, int(compSize))
+			if err != nil {
 				return written, fmt.Errorf("%w: reading compressed payload: %w", ErrAppleFrame, err)
 			}
 			// Prefix the previous window so this block's matches can reference it,
-			// then decode the block immediately after it.
-			buf := make([]byte, len(window)+rawSize+decodeSlack)
+			// then decode the block immediately after it. The block may not grow
+			// past the window plus its declared size.
+			maxEnd := len(window) + int(rawSize)
+			buf := make([]byte, maxEnd+decodeSlack)
 			copy(buf, window)
-			buf, di, err := decodeInto(buf, len(window), payload)
+			buf, di, err := decodeInto(buf, len(window), payload, maxEnd)
+			if errors.Is(err, ErrTooLarge) {
+				return written, fmt.Errorf("%w: block decodes past its declared %d bytes", ErrAppleFrame, rawSize)
+			}
 			if err != nil {
 				return written, err
 			}
 			out := buf[len(window):di]
-			if len(out) != rawSize {
+			if len(out) != int(rawSize) {
 				return written, fmt.Errorf("%w: block decoded to %d bytes, header says %d", ErrAppleFrame, len(out), rawSize)
 			}
 			if _, err := dst.Write(out); err != nil {
@@ -88,9 +169,12 @@ func DecompressAppleStream(dst io.Writer, src io.Reader) (int64, error) {
 			if _, err := io.ReadFull(src, hdr[:4]); err != nil {
 				return written, fmt.Errorf("%w: reading stored header: %w", ErrAppleFrame, err)
 			}
-			rawSize := int(binary.LittleEndian.Uint32(hdr[0:4]))
-			raw := make([]byte, rawSize)
-			if _, err := io.ReadFull(src, raw); err != nil {
+			rawSize := uint64(binary.LittleEndian.Uint32(hdr[0:4]))
+			if !fits(rawSize) {
+				return written, ErrTooLarge
+			}
+			raw, err := readBlock(src, int(rawSize))
+			if err != nil {
 				return written, fmt.Errorf("%w: reading stored payload: %w", ErrAppleFrame, err)
 			}
 			if _, err := dst.Write(raw); err != nil {
@@ -106,14 +190,10 @@ func DecompressAppleStream(dst io.Writer, src io.Reader) (int64, error) {
 }
 
 // DecompressApple decodes an in-memory Apple LZ4 frame and returns the
-// decompressed bytes. For large inputs prefer DecompressAppleStream, which does
-// not buffer the whole output.
+// decompressed bytes, at most [DefaultMaxOutput] of them. For large inputs
+// prefer DecompressAppleStream, which does not buffer the whole output.
 func DecompressApple(src []byte) ([]byte, error) {
-	var out sliceWriter
-	if _, err := DecompressAppleStream(&out, &byteReader{b: src}); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return DecompressAppleLimit(src, DefaultMaxOutput)
 }
 
 // slideWindow returns the trailing winSize bytes of window++out in a fresh
