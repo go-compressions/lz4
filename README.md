@@ -58,6 +58,28 @@ Validated against real Apple output: a `cirruslabs/macos-sequoia-base` Tart disk
 layer decodes byte-for-byte to the length and SHA-256 recorded in its
 `org.cirruslabs.tart.uncompressed-*` OCI annotations.
 
+## Untrusted input
+
+Every size taken from the input is bounded **before** anything is allocated from it.
+
+- **A block can expand 255:1** (a match length is extended by any number of `0xFF`
+  bytes; [lz4_Block_format.md](https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md)),
+  so only a ceiling bounds the output. `DecompressBlock` stops at
+  `DefaultMaxOutput` (1 GiB) with `ErrTooLarge`; `DecompressBlockLimit(src, dstCap, maxOut)`
+  sets another, and the refusal comes before the buffer that would pass it is grown.
+  `dstCap` is only a hint: it is clamped to `255 * len(src)` and to the ceiling, so
+  a size header passed as `dstCap` allocates nothing it did not earn.
+- **Apple frames** carry 32-bit `rawSize`/`compSize` fields. A 12-byte `bv41`
+  header declaring 1 GiB used to allocate 1 GiB, and so did an 8-byte `bv4-` one.
+  Now `rawSize` must be within `DefaultMaxBlock` (16 MiB; Apple's encoder emits
+  64 KiB blocks, measured with `compression_encode_buffer`), must be reachable from
+  `compSize` at 255:1, `compSize` cannot exceed what an encoder makes of `rawSize`,
+  and payloads are read in chunks that grow with the bytes that arrive.
+  `DecompressAppleStreamLimit` sets the block ceiling, `DecompressAppleLimit` a total.
+- On 32-bit, sizes are compared as `uint64` and length sums are checked as they
+  accumulate, so they cannot wrap past a bounds check.
+- Fuzzed: `FuzzDecompressBlock`, `FuzzDecompressApple`, `FuzzRoundTrip`.
+
 ## Why LZ4 is the ideal matchlen consumer
 
 LZ4 has **no entropy-coding stage** — encode time is dominated by match-finding
