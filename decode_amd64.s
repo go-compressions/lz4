@@ -11,6 +11,7 @@ TEXT ·fastSeqs(SB), NOSPLIT, $0-80
 	MOVQ dst_len+32(FP), R9
 	MOVQ ip+48(FP), R10
 	MOVQ di+56(FP), R11
+	PCALIGN $32
 loop:
 	LEAQ 32(R10), AX
 	CMPQ AX, R8
@@ -39,16 +40,18 @@ loop:
 	LEAQ -1(CX), DX
 	CMPQ DX, R11
 	JAE exitseq
-	CMPQ CX, $16
+	CMPQ CX, $8
 	JB exitseq
 	MOVQ R11, DX
 	SUBQ CX, DX
 	LEAQ (DI)(DX*1), DX
 	LEAQ (DI)(R11*1), AX
-	MOVOU (DX), X0
-	MOVOU X0, (AX)
-	MOVOU 16(DX), X1
-	MOVOU X1, 16(AX)
+	MOVQ (DX), BX
+	MOVQ BX, (AX)
+	MOVQ 8(DX), BX
+	MOVQ BX, 8(AX)
+	MOVWQZX 16(DX), BX
+	MOVW BX, 16(AX)
 	LEAQ 4(R12), BX
 	ADDQ BX, R11
 	JMP loop

@@ -49,6 +49,7 @@ func genAMD64(f *emit.File) {
 	b := amd64.NewFunc("fastSeqs", sig(), 0)
 	b.LoadArg("src_base", "SI").LoadArg("src_len", "R8").LoadArg("dst_base", "DI").LoadArg("dst_len", "R9").
 		LoadArg("ip", "R10").LoadArg("di", "R11").
+		Raw("PCALIGN $32").
 		Label("loop").
 		Raw("LEAQ 32(R10), AX").Raw("CMPQ AX, R8").Raw("JA done").
 		Raw("LEAQ 48(R11), AX").Raw("CMPQ AX, R9").Raw("JA done").
@@ -65,9 +66,14 @@ func genAMD64(f *emit.File) {
 		Raw("ADDQ BX, R10").Raw("ADDQ BX, R11").
 		Raw("MOVWQZX (SI)(R10*1), CX").Raw("ADDQ $2, R10").
 		Raw("LEAQ -1(CX), DX").Raw("CMPQ DX, R11").Raw("JAE exitseq").
-		Raw("CMPQ CX, $16").Raw("JB exitseq").
+		Raw("CMPQ CX, $8").Raw("JB exitseq").
 		Raw("MOVQ R11, DX").Raw("SUBQ CX, DX").Raw("LEAQ (DI)(DX*1), DX").Raw("LEAQ (DI)(R11*1), AX").
-		Raw("MOVOU (DX), X0").Raw("MOVOU X0, (AX)").Raw("MOVOU 16(DX), X1").Raw("MOVOU X1, 16(AX)").
+		// 8+8+2 bytes, as liblz4 and pierrec do: a 16-byte load that straddles two
+		// recent smaller stores cannot be forwarded and stalls; 8-byte loads inside
+		// one earlier store can. Valid for offsets >= 8: each 8-byte piece reads
+		// bytes that are already written.
+		Raw("MOVQ (DX), BX").Raw("MOVQ BX, (AX)").Raw("MOVQ 8(DX), BX").Raw("MOVQ BX, 8(AX)").
+		Raw("MOVWQZX 16(DX), BX").Raw("MOVW BX, 16(AX)").
 		Raw("LEAQ 4(R12), BX").Raw("ADDQ BX, R11").Raw("JMP loop").
 		Label("general").
 		Raw("CMPQ BX, $15").Raw("JNE litok").
