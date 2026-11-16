@@ -16,8 +16,10 @@
 //   - fewer than 32 source or 48 destination bytes remain at its start;
 //   - its literals or match need more than the 16-byte wild copy's margin
 //     (ip+ll+18 <= len(src) and di+ll+16 <= len(dst), likewise di+ml+16);
-//   - its offset is 0, beyond the output so far, or under 16 (the match then
-//     overlaps itself within one 16-byte move);
+//   - its offset is 0 or beyond the output so far, or under 16 (the general
+//     path) / under 8 (the amd64 short-sequence path: nibble and literal run
+//     below 15, three 8-byte-granular moves), where the match overlaps itself
+//     within one move;
 //   - a length extension would run into the last 16 source bytes.
 //
 // Literals and matches are copied 16 bytes at a time and may write up to 15
