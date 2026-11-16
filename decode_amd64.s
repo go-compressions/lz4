@@ -26,6 +26,33 @@ loop:
 	SHRQ $4, BX
 	ANDQ $15, AX
 	MOVQ AX, R12
+	CMPQ BX, $14
+	JA general
+	CMPQ R12, $15
+	JE general
+	MOVOU (SI)(R10*1), X0
+	MOVOU X0, (DI)(R11*1)
+	ADDQ BX, R10
+	ADDQ BX, R11
+	MOVWQZX (SI)(R10*1), CX
+	ADDQ $2, R10
+	LEAQ -1(CX), DX
+	CMPQ DX, R11
+	JAE exitseq
+	CMPQ CX, $16
+	JB exitseq
+	MOVQ R11, DX
+	SUBQ CX, DX
+	LEAQ (DI)(DX*1), DX
+	LEAQ (DI)(R11*1), AX
+	MOVOU (DX), X0
+	MOVOU X0, (AX)
+	MOVOU 16(DX), X1
+	MOVOU X1, 16(AX)
+	LEAQ 4(R12), BX
+	ADDQ BX, R11
+	JMP loop
+general:
 	CMPQ BX, $15
 	JNE litok
 litext:

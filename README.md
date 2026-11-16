@@ -54,8 +54,9 @@ and run against a `PROT_NONE` guard page on both buffers.
 
 Single core, 128 KiB blocks, Apple M4 Max (output MB/s; liblz4 1.11 compiled with
 clang -O2): text 5150 (liblz4 5070, pierrec 4650), mixed 14700 (13400, 14200),
-runs 20900 (15400, 23000). AMD Ryzen 9 7950X: text 4800-5500 (6200, 6600),
-mixed 15500 (12500, 14500), runs 16500 (14800, 26000).
+runs 20900 (15400, 23000). AMD Ryzen 9 7950X: text 5700 (6200, 6700), mixed
+15800 (12500, 14500), runs 16400 (14800, 27300): behind liblz4 and pierrec on
+text there, ahead of both on mixed.
 
 ## Apple LZ4 frame format
 

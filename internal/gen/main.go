@@ -56,6 +56,20 @@ func genAMD64(f *emit.File) {
 		Raw("MOVBQZX (SI)(R10*1), AX").Raw("INCQ R10").
 		Raw("MOVQ AX, BX").Raw("SHRQ $4, BX").
 		Raw("ANDQ $15, AX").Raw("MOVQ AX, R12").
+		// Common case, no loops: literal run < 15 (one 16-byte move) and match
+		// nibble < 15 (length <= 18, two 16-byte moves). The 32-byte margins
+		// checked at the top of the loop cover every read and write.
+		Raw("CMPQ BX, $14").Raw("JA general").
+		Raw("CMPQ R12, $15").Raw("JE general").
+		Raw("MOVOU (SI)(R10*1), X0").Raw("MOVOU X0, (DI)(R11*1)").
+		Raw("ADDQ BX, R10").Raw("ADDQ BX, R11").
+		Raw("MOVWQZX (SI)(R10*1), CX").Raw("ADDQ $2, R10").
+		Raw("LEAQ -1(CX), DX").Raw("CMPQ DX, R11").Raw("JAE exitseq").
+		Raw("CMPQ CX, $16").Raw("JB exitseq").
+		Raw("MOVQ R11, DX").Raw("SUBQ CX, DX").Raw("LEAQ (DI)(DX*1), DX").Raw("LEAQ (DI)(R11*1), AX").
+		Raw("MOVOU (DX), X0").Raw("MOVOU X0, (AX)").Raw("MOVOU 16(DX), X1").Raw("MOVOU X1, 16(AX)").
+		Raw("LEAQ 4(R12), BX").Raw("ADDQ BX, R11").Raw("JMP loop").
+		Label("general").
 		Raw("CMPQ BX, $15").Raw("JNE litok").
 		Label("litext").
 		Raw("LEAQ 16(R10), AX").Raw("CMPQ AX, R8").Raw("JAE exitseq").
