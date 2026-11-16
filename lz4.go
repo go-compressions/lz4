@@ -108,6 +108,14 @@ func compress(src []byte, mlen func(a, b []byte) int) []byte {
 			}
 			seq = u64(src[ip:])
 		}
+		// The probes at ip+1 and ip+2 can land past the limit: the format
+		// (lz4_Block_format.md, "End of block conditions") wants the last match
+		// to start at least 12 bytes before the end, and liblz4's decoder refuses
+		// a block whose last match starts later when the output buffer is exactly
+		// the decoded size (the kernel's squashfs and btrfs).
+		if ip > limit {
+			return emitLast(dst, src[anchor:])
+		}
 
 		// Lazy matching: measure the match at ip, then peek one byte ahead. If
 		// ip+1 yields a strictly longer match, defer the current one (emit one
