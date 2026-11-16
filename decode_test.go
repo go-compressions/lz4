@@ -45,6 +45,8 @@ func decodeCorpora(r *rand.Rand) map[string][]byte {
 	return out
 }
 
+func newRand(seed uint64) *rand.Rand { return rand.New(rand.NewPCG(seed, seed+1)) }
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

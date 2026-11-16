@@ -2,11 +2,17 @@ package lz4
 
 import (
 	"bytes"
+	"embed"
 	"encoding/binary"
 	"math/rand/v2"
-	"os"
 	"testing"
 )
+
+// The fixtures are embedded: the emulated CI jobs run the test binary far from
+// the source tree.
+//
+//go:embed testdata/liblz4/*.blk
+var liblz4FS embed.FS
 
 // testdata/liblz4/{text,runs,mixed}.blk hold the first three 32 KiB blocks of
 // three deterministic corpora, compressed by liblz4 1.11 (LZ4_compress_default),
@@ -74,7 +80,7 @@ func TestDecodersAgainstLiblz4(t *testing.T) {
 		gen  func(*rand.Rand) []byte
 	}{{"text", genText}, {"runs", genRuns}, {"mixed", genMixed}} {
 		raw := c.gen(rand.New(rand.NewPCG(42, uint64(43+i))))
-		blk, err := os.ReadFile("testdata/liblz4/" + c.name + ".blk")
+		blk, err := liblz4FS.ReadFile("testdata/liblz4/" + c.name + ".blk")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -86,10 +92,12 @@ func TestDecodersAgainstLiblz4(t *testing.T) {
 			blk = blk[8+compLen:]
 			want := raw[n*rawLen : (n+1)*rawLen]
 
-			dst := make([]byte, rawLen)
-			m, err := DecodeBlock(dst, comp)
-			if err != nil || !bytes.Equal(dst[:m], want) {
-				t.Fatalf("%s block %d: DecodeBlock n=%d err=%v", c.name, n, m, err)
+			for _, asm := range []bool{true, false} { // the assembly loop, and the Go code alone
+				dst := make([]byte, rawLen)
+				m, err := decodeBlock(dst, comp, asm)
+				if err != nil || !bytes.Equal(dst[:m], want) {
+					t.Fatalf("%s block %d (asm %v): n=%d err=%v", c.name, n, asm, m, err)
+				}
 			}
 			got, err := DecompressBlock(comp, rawLen)
 			if err != nil || !bytes.Equal(got, want) {

@@ -16,17 +16,19 @@ var ErrShortDst = errors.New("lz4: destination too small")
 // 16 bytes clear of both buffers' ends (the LZ4 format keeps the last 5 bytes
 // literal and the last match 12 bytes from the end, so that is almost every
 // sequence), exact copies for the last few bytes.
-func DecodeBlock(dst, src []byte) (int, error) {
+func DecodeBlock(dst, src []byte) (int, error) { return decodeBlock(dst, src, haveFast) }
+
+// decodeBlock is DecodeBlock with the assembly loop switchable, so that the Go
+// code the assembly normally pre-empts is tested on every architecture.
+func decodeBlock(dst, src []byte, asm bool) (int, error) {
 	di, ip := 0, 0
 	for ip < len(src) {
 		// The assembly loop takes every whole sequence it can; the Go code below
 		// then does one (the sequence it declined, or the end of the block) and
 		// hands over again.
-		if haveFast {
+		if asm {
+			// It leaves at least 32 source bytes, so ip < len(src) still holds.
 			ip, di = fastSeqs(src, dst, ip, di)
-			if ip >= len(src) {
-				break
-			}
 		}
 		// Fast path: both buffers are far enough from their ends that a sequence
 		// of short literals (< 15) and a short match (<= 16 bytes, not
