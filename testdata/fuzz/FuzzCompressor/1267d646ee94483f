@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("0")
+[]byte("r\x00\x00\x00@7r\x00\x00\x00@700r\x00\x00\x00@70000")

@@ -34,6 +34,27 @@ c := lz4.CompressBlock(src)
 out, _ := lz4.DecompressBlock(c, len(src))
 ```
 
+## Compressing many blocks: `Compressor`
+
+`CompressBlock` borrows a reusable state from a pool, so it no longer allocates
+and clears a 256 KiB match table per call (a 4 KiB block used to cost 264 KiB
+and 2 allocations; it now costs the output and 1 allocation). To own the state,
+or to compress into your own buffer with no allocation at all:
+
+```go
+c := lz4.NewCompressor()                 // one per goroutine
+for _, blk := range blocks {
+    dst = c.AppendCompress(dst[:0], blk) // 0 allocations when dst is big enough
+}
+out := c.Compress(blk)                   // or a fresh slice
+```
+
+The table is never cleared between blocks (slots carry a generation offset, as in
+liblz4's `LZ4_resetStream_fast`) and is only as wide as the input needs, like
+liblz4's small-input table. Blocks may differ byte for byte from earlier
+releases for inputs under 64 KiB; they decode with every LZ4 decoder, checked
+against liblz4 1.11 (`go test -tags liblz4 .`, needs liblz4 and cgo).
+
 ## Decoding into your own buffer
 
 ```go

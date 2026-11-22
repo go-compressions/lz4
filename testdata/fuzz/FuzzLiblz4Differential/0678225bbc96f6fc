@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("abcabcabca\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4cabcabc00000")
+[]byte("")

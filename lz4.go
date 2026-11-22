@@ -13,6 +13,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"math/bits"
+	"sync"
 
 	"github.com/go-simd/matchlen"
 )
@@ -39,16 +41,67 @@ const (
 // which both finds more candidates and cuts false-positive confirmations. Note
 // it reads only the low 48 bits, so the key for position p+k is hash6(seq>>8*k)
 // where seq is the 8-byte load at p — no extra memory load is needed.
-func hash6(x uint64) uint32 {
+func hash6(x uint64, shift uint) uint32 {
 	const prime6bytes = 227718039650203
-	return uint32(((x << (64 - 48)) * prime6bytes) >> (64 - hashLog))
+	return uint32(((x << (64 - 48)) * prime6bytes) >> shift)
 }
+
+// minHashLog is the smallest table: 256 slots.
+const minHashLog = 8
+
+// maxBase is where the generation counter is rewound (with one full clear): a
+// stored slot is base+position, so base+len(src) must stay inside an int32.
+const maxBase = math.MaxInt32 - 2*winSize
 
 func u32(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }
 func u64(b []byte) uint64 { return binary.LittleEndian.Uint64(b) }
 
-// CompressBlock compresses src into a standard LZ4 block.
-func CompressBlock(src []byte) []byte { return compress(src, matchlen.MatchLen) }
+// CompressBlock compresses src into a standard LZ4 block. It borrows a
+// [Compressor] from a pool, so it neither allocates nor clears the 256 KiB
+// match table per call.
+func CompressBlock(src []byte) []byte {
+	c := compressorPool.Get().(*Compressor)
+	out := c.Compress(src)
+	compressorPool.Put(c)
+	return out
+}
+
+var compressorPool = sync.Pool{New: func() any { return NewCompressor() }}
+
+// A Compressor holds the match table between calls, so compressing many small
+// blocks does not allocate and clear 256 KiB each time (liblz4's reusable
+// LZ4_stream_t). The zero value is not usable; use [NewCompressor]. A
+// Compressor is not safe for concurrent use; give each goroutine its own.
+//
+// Slots store base+position, and base advances past every block, so the slots
+// of earlier blocks read as "too far back" and the table is never cleared
+// between calls (the currentOffset trick of LZ4_resetStream_fast). The table
+// is also used only as wide as the input needs (hashLogFor), as liblz4 does
+// for inputs under 64 KiB.
+type Compressor struct {
+	table [hashTableLen]int32
+	base  int
+}
+
+// NewCompressor returns a Compressor ready for use.
+func NewCompressor() *Compressor { return &Compressor{base: winSize} }
+
+// Compress compresses src into a new standard LZ4 block.
+func (c *Compressor) Compress(src []byte) []byte {
+	return c.compress(make([]byte, 0, len(src)/2+16), src, matchlen.MatchLen)
+}
+
+// AppendCompress appends the LZ4 block for src to dst and returns it; with a
+// dst of enough capacity it allocates nothing.
+func (c *Compressor) AppendCompress(dst, src []byte) []byte {
+	return c.compress(dst, src, matchlen.MatchLen)
+}
+
+// hashLogFor sizes the table to the input: about one slot per input byte,
+// between 256 and the 64 Ki-slot maximum.
+func hashLogFor(n int) uint {
+	return uint(min(hashLog, max(minHashLog, bits.Len(uint(n)))))
+}
 
 // compress is parameterised by the match-counter so benchmarks can compare the
 // SIMD matchlen against a scalar reference.
@@ -60,13 +113,27 @@ func CompressBlock(src []byte) []byte { return compress(src, matchlen.MatchLen) 
 // one (emitting one extra literal) and takes the longer match instead. That is
 // the classic LZ4 ratio lever for text.
 func compress(src []byte, mlen func(a, b []byte) int) []byte {
-	dst := make([]byte, 0, len(src)/2+16)
+	return NewCompressor().compress(make([]byte, 0, len(src)/2+16), src, mlen)
+}
+
+func (c *Compressor) compress(dst, src []byte, mlen func(a, b []byte) int) []byte {
 	if len(src) < mfLimit+minMatch {
 		return emitLast(dst, src)
 	}
-	// Zero-init (Go memclr): a slot of 0 means "empty or position 0"; the win
-	// + u32 checks below disambiguate, so no -1 fill is needed.
-	var table [hashTableLen]int32
+	// Advance the generation. A slot from an earlier block holds a value
+	// <= the old base+len, so against the new base it is <= -winSize and the
+	// distance test below refuses it; a fresh slot (0) is refused the same
+	// way. Only when base nears the int32 limit is the table cleared.
+	if c.base > maxBase-len(src) {
+		clear(c.table[:])
+		c.base = winSize
+	}
+	base := c.base
+	c.base += len(src) + winSize
+	shift := 64 - hashLogFor(len(src))
+	table := &c.table
+	// A slot holds base+position (int32); r = slot-base is the position, and a
+	// stale or empty slot gives r <= -winSize, which fails ip-r < winSize.
 	matchLimit := len(src) - lastLiterals
 	limit := len(src) - mfLimit
 	anchor := 0
@@ -81,23 +148,23 @@ func compress(src []byte, mlen func(a, b []byte) int) []byte {
 		var ref int
 		seq := u64(src[ip:])
 		for {
-			h0 := hash6(seq)
-			r0 := int(table[h0])
-			table[h0] = int32(ip)
+			h0 := hash6(seq, shift)
+			r0 := int(table[h0]) - base
+			table[h0] = int32(base + ip)
 			if ip-r0 < winSize && r0 < ip && u32(src[r0:]) == uint32(seq) {
 				ref = r0
 				break
 			}
-			h1 := hash6(seq >> 8)
-			r1 := int(table[h1])
-			table[h1] = int32(ip + 1)
+			h1 := hash6(seq>>8, shift)
+			r1 := int(table[h1]) - base
+			table[h1] = int32(base + ip + 1)
 			if ip+1-r1 < winSize && r1 < ip+1 && u32(src[r1:]) == uint32(seq>>8) {
 				ip, ref = ip+1, r1
 				break
 			}
-			h2 := hash6(seq >> 16)
-			r2 := int(table[h2])
-			table[h2] = int32(ip + 2)
+			h2 := hash6(seq>>16, shift)
+			r2 := int(table[h2]) - base
+			table[h2] = int32(base + ip + 2)
 			if ip+2-r2 < winSize && r2 < ip+2 && u32(src[r2:]) == uint32(seq>>16) {
 				ip, ref = ip+2, r2
 				break
@@ -125,9 +192,9 @@ func compress(src []byte, mlen func(a, b []byte) int) []byte {
 		ml := minMatch + mlen(src[ip+minMatch:matchLimit], src[ref+minMatch:])
 		if lazyEnabled && ml < lazyMaxLen && ip+1 <= limit {
 			lseq := u64(src[ip+1:])
-			h := hash6(lseq)
-			nref := int(table[h])
-			table[h] = int32(ip + 1)
+			h := hash6(lseq, shift)
+			nref := int(table[h]) - base
+			table[h] = int32(base + ip + 1)
 			if ip+1-nref < winSize && nref < ip+1 && u32(src[nref:]) == uint32(lseq) {
 				if nml := minMatch + mlen(src[ip+1+minMatch:matchLimit], src[nref+minMatch:]); nml > ml {
 					ip++
@@ -150,7 +217,7 @@ func compress(src []byte, mlen func(a, b []byte) int) []byte {
 			return emitLast(dst, src[anchor:])
 		}
 		// Seed the table with an interior position for better next matches.
-		table[hash6(u64(src[ip-2:]))] = int32(ip - 2)
+		table[hash6(u64(src[ip-2:]), shift)] = int32(base + ip - 2)
 	}
 }
 
