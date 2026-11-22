@@ -17,13 +17,22 @@ jobs:
       - uses: actions/setup-go@v7
         with: { go-version: '1.27.4' }
       - run: go vet ./...
-      - run: go test -v ./...
+      - run: go test -race -v ./...
       - name: coverage gate (100%)
         run: |
           go test -covermode=atomic -coverprofile=cov.out ./...
           pct=$(go tool cover -func=cov.out | awk '/^total:/{print $3}')
           echo "coverage=$pct"
           [ "$pct" = "100.0%" ] || { echo "coverage below 100%"; exit 1; }
+  vulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.27.4' }
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
   # Apple's own encoder is the only witness for apple.go that did not come from
   # the same author as the decoder, and it exists on exactly one runner. Without
   # this job the oracle tests skip everywhere and a suite of skips is green --

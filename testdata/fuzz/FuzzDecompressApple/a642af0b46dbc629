@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("ꩩ0")
+int(1049020)

@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("𐃧")
+int(-159)
