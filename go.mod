@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	github.com/go-compressions/appleoracle v0.3.0
 	github.com/go-simd/matchlen v0.5.0
-	github.com/pierrec/lz4/v4 v4.1.33
+	github.com/pierrec/lz4/v4 v4.1.34
 )
 
 require golang.org/x/sys v0.48.0 // indirect
