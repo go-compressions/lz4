@@ -104,6 +104,33 @@ Validated against real Apple output: a `cirruslabs/macos-sequoia-base` Tart disk
 layer decodes byte-for-byte to the length and SHA-256 recorded in its
 `org.cirruslabs.tart.uncompressed-*` OCI annotations.
 
+## Standard LZ4 frame (`.lz4`, magic `0x184D2204`)
+
+The container `lz4(1)`, U-Boot (`uImage -C lz4`, `ulz4fn`) and every LZ4 library read
+([lz4_Frame_format.md](https://github.com/lz4/lz4/blob/dev/doc/lz4_Frame_format.md)).
+
+```go
+f := lz4.CompressFrame(data)                                          // deterministic
+f = lz4.CompressFrameOptions(data, lz4.FrameOptions{ContentChecksum: true})
+out, err := lz4.DecompressFrame(f)                                    // <= 1 GiB
+out, err = lz4.DecompressFrameLimit(f, 64<<20)                        // ErrTooLarge past 64 MiB
+```
+
+`CompressFrame` writes FLG `0x68` (version 01, **independent** blocks, no block
+checksum, content size present, no content checksum) and BD `0x70` (4 MiB
+blocks), a header checksum, an end mark, and stores any block that does not
+shrink. That is exactly what U-Boot's `ulz4fn` accepts: it refuses linked blocks
+and reserved bits, skips the header checksum, and stops at the end mark.
+`FrameOptions` adds the block and content checksums (`ulz4fn` ignores the
+latter). The decoder also reads linked blocks, block and content checksums,
+concatenated frames and skippable frames; it rejects a bad magic, header
+checksum, reserved bits, dictionary frames, a block past the declared maximum,
+a content size that disagrees with the content, and truncation (`ErrFrame`).
+
+It is checked against `lz4(1)` in both directions (every level, linked and
+independent blocks, every block size, all checksums; CI installs `lz4` and fails
+if it is missing), against `pierrec/lz4`'s frame code, and against XXH32 vectors.
+
 ## Untrusted input
 
 Every size taken from the input is bounded **before** anything is allocated from it.
@@ -124,7 +151,14 @@ Every size taken from the input is bounded **before** anything is allocated from
   `DecompressAppleStreamLimit` sets the block ceiling, `DecompressAppleLimit` a total.
 - On 32-bit, sizes are compared as `uint64` and length sums are checked as they
   accumulate, so they cannot wrap past a bounds check.
-- Fuzzed: `FuzzDecompressBlock`, `FuzzDecompressApple`, `FuzzRoundTrip`.
+- **Standard frames** declare a 64-bit content size and 31-bit block sizes. The
+  declared size and every block's size are checked against the ceiling, the block
+  maximum and `255 * len(input)` before a buffer is made, so a forged
+  `1<<62` header on a 20-byte frame allocates nothing
+  (`TestFrameBombAllocatesNothing`, and `TestFrameBombUnderMemoryLimit` under a
+  64 MiB `GOMEMLIMIT` in CI).
+- Fuzzed: `FuzzDecompressBlock`, `FuzzDecompressApple`, `FuzzDecompressFrame`,
+  `FuzzFrameRoundTrip`, `FuzzRoundTrip`.
 
 ## Why LZ4 is the ideal matchlen consumer
 

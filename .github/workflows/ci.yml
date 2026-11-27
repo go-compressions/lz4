@@ -16,9 +16,17 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with: { go-version: '1.27.4' }
+      # lz4(1) is the oracle for the standard frame (frame_cli_test.go): both
+      # directions run here, and LZ4_CLI_REQUIRED turns "not installed" from a
+      # skip into a failure so a green run cannot mean "never asked lz4".
+      - run: sudo apt-get install -y lz4
       - run: go vet ./...
-      - run: go test -race -v ./...
+      - run: LZ4_CLI_REQUIRED=1 go test -race -v ./...
+      # The frame bomb tests under a hard Go heap cap, far below what the
+      # forged frames claim.
+      - run: GOMEMLIMIT=64MiB LZ4_CLI_REQUIRED=1 go test -count=1 -run 'FrameBomb' -v .
       - name: coverage gate (100%)
+        env: { LZ4_CLI_REQUIRED: '1' }
         run: |
           go test -covermode=atomic -coverprofile=cov.out ./...
           pct=$(go tool cover -func=cov.out | awk '/^total:/{print $3}')
