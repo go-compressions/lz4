@@ -220,6 +220,7 @@ func TestFrameErrors(t *testing.T) {
 		{"declared size past ceiling", mkFrame(0x68, 0x70, sz(1<<40), nil, endMark), 1 << 20, ErrTooLarge},
 		{"truncated block header", good[:len(good)-2], 1 << 20, ErrFrame},
 		{"block past maximum", sum(0x68, [][]byte{binary.LittleEndian.AppendUint32(nil, 1<<30)}, nil), 1 << 20, ErrFrame},
+		{"stored block past a 64 KiB maximum", mkFrame(0x68, 0x40, nil, [][]byte{blk(make([]byte, 65537), true)}, endMark), 1 << 24, ErrFrame},
 		{"truncated block", sum(0x68, [][]byte{{9, 0, 0, 0, 1, 2}}, nil), 1 << 20, ErrFrame},
 		{"truncated block checksum", sum(0x78, [][]byte{stored}, nil), 1 << 20, ErrFrame},
 		{"block checksum", sum(0x78, [][]byte{append(append([]byte(nil), stored...), 0, 0, 0, 0)}, endMark), 1 << 20, ErrFrame},
@@ -239,6 +240,9 @@ func TestFrameErrors(t *testing.T) {
 	}
 	if got, err := DecompressFrame(sum(0x78, [][]byte{append(append([]byte(nil), stored...), cs([]byte("abcd"))...)}, endMark)); err != nil || string(got) != "abcd" {
 		t.Fatalf("control frame with block checksum: %q %v", got, err)
+	}
+	if got, err := DecompressFrame(mkFrame(0x68, 0x40, nil, [][]byte{blk(make([]byte, 65536), true)}, endMark)); err != nil || len(got) != 65536 {
+		t.Fatalf("a block of exactly the maximum: %d %v", len(got), err)
 	}
 	for _, c := range cases {
 		got, err := DecompressFrameLimit(c.in, c.max)
