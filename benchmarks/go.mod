@@ -7,7 +7,7 @@ module github.com/go-compressions/lz4/benchmarks
 go 1.27.1
 
 require (
-	github.com/go-compressions/lz4 v0.6.0
+	github.com/go-compressions/lz4 v0.7.0
 	github.com/pierrec/lz4/v4 v4.1.34
 )
 
